@@ -1,0 +1,46 @@
+# Ancien projet gardé en filet de sécurité — jamais commité
+/_reference_ancien/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Modèles IA / gros binaires
+*.h5
+*.keras
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+screenshots_audit/
+results.json
+
+# Node / Next.js
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+.next/
+out/
+build/
+coverage/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.pem
+
+# OS
+.DS_Store
