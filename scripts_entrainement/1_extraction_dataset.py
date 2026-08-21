@@ -5,8 +5,9 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Chargement des clés
-load_dotenv()
+# Chargement des clés depuis le .env du backend (un seul fichier partagé)
+BACKEND_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", "backend", ".env")
+load_dotenv(BACKEND_ENV_PATH)
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 DATABASE_ID = os.getenv("DATABASE_ID")
 
@@ -73,7 +74,8 @@ def get_all_sites():
                         "Client": client_name,
                         "URL": site_url,
                         "Date_Mise_en_ligne": date_online,
-                        "Statut_Scan": "Pending"
+                        "Statut_Scan": "Pending",
+                        "Notion_Page_ID": page["id"]
                     })
                     print(f"✅ Trouvé : {client_name}")
                 
