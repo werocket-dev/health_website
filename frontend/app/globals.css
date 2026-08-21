@@ -3,6 +3,13 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  --color-chalk: #f7f8f6;
+  --color-mist: #eef2f4;
+  --color-white: #ffffff;
+  --color-ink: #17191c;
+  --color-neon: #00e08a;
+  --color-deep-teal: #0f3d3e;
 }
 
 @theme inline {
