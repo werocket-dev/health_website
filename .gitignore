@@ -13,6 +13,8 @@
 *.onnx
 
 # Python
+scripts_entrainement/data/
+scripts_entrainement/dataset/
 __pycache__/
 *.pyc
 .venv/

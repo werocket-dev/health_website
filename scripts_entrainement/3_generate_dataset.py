@@ -5,13 +5,21 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 from urllib.parse import urlparse, urljoin
 
-load_dotenv()
-engine = create_engine(f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@localhost:{os.getenv('DB_PORT')}/{os.getenv('POSTGRES_DB')}")
+ENV_PATH = os.path.join(os.path.dirname(__file__), "..", "backend", ".env")
+load_dotenv(ENV_PATH)
+engine = create_engine(os.getenv('DATABASE_URL'))
 
 DIRS = {"healthy": "dataset/healthy", "broken": "dataset/broken"}
 for d in DIRS.values(): os.makedirs(d, exist_ok=True)
 
 CONTACT_SLUGS = ["/contact", "/contactez-nous"]
+
+# Deux viewports fixes, chacun hors de la zone grise des breakpoints responsive
+# (800px pouvait déclencher tantôt un rendu desktop, tantôt mobile selon le site)
+DEVICES = {
+    "desktop": {"width": 1440, "height": 900},
+    "mobile": {"width": 390, "height": 844},
+}
 
 def clean_url(raw_url):
     if not raw_url: return None
@@ -43,7 +51,7 @@ async def capture_page(page, url, name_prefix):
 
 async def sabotaging_bot():
     with engine.connect() as conn:
-        query = text("SELECT * FROM sites LIMIT 150")
+        query = text("SELECT * FROM projects WHERE is_active = true ORDER BY RANDOM() LIMIT 350")
         sites = conn.execute(query).mappings().all()
 
     print(f"🧪 Génération du Dataset sur {len(sites)} sites...")
@@ -52,9 +60,9 @@ async def sabotaging_bot():
         browser = await p.chromium.launch(headless=True)
 
         for site in sites:
-            url = clean_url(site['URL'])
-            name = site['Client'].replace(" ", "_").replace("/", "-")
-            print(f"👉 {site['Client']}...")
+            url = clean_url(site['url'])
+            name = site['client_name'].replace(" ", "_").replace("/", "-")
+            print(f"👉 {site['client_name']}...")
 
             try:
                 result = urlparse(url)
@@ -65,21 +73,28 @@ async def sabotaging_bot():
                 print(f"   ❌ Erreur de parsing : {str(e)}")
                 continue
 
-            context = await browser.new_context(viewport={'width': 800, 'height': 600})
+            context = await browser.new_context(viewport=DEVICES["desktop"])
             page = await context.new_page()
 
             try:
-                # 1. Page d'accueil
-                await capture_page(page, url, name)
-                print(f"   ✅ Accueil capturé")
-
-                # 2. Page contact (fallback automatique)
+                # Détection de la page contact une seule fois (indépendante du viewport)
                 contact_url = await find_contact_url(page, url)
                 if contact_url:
-                    await capture_page(page, contact_url, f"{name}_contact")
-                    print(f"   ✅ Contact capturé ({contact_url})")
+                    print(f"   ℹ️  Page contact trouvée ({contact_url})")
                 else:
-                    print(f"   ⚠️  Pas de page contact trouvée - ignoré")
+                    print(f"   ⚠️  Pas de page contact trouvée")
+
+                for device_name, viewport in DEVICES.items():
+                    await page.set_viewport_size(viewport)
+
+                    # 1. Page d'accueil
+                    await capture_page(page, url, f"{name}_{device_name}")
+                    print(f"   ✅ Accueil capturé ({device_name})")
+
+                    # 2. Page contact (si trouvée)
+                    if contact_url:
+                        await capture_page(page, contact_url, f"{name}_contact_{device_name}")
+                        print(f"   ✅ Contact capturé ({device_name})")
 
             except Exception as e:
                 error_msg = str(e).splitlines()[0]
