@@ -105,9 +105,10 @@ def connect_to_agent(url):
         timestamp = int(time.time())
         
         # 2. Construction du message à signer : URL_ORIGINE|timestamp|route
-        # ⚠️ IMPORTANT : On signe avec l'URL que le plugin connait (souvent celle de la DB WP)
-        # Mais pour être sûr, on utilise l'URL finale trouvée
-        message = f"{final_base_url}|{timestamp}|/werocket/v1/status"
+        # ⚠️ Depuis la version 2.6.3 du plugin, la route est incluse dans le message signé
+        # pour empêcher le replay d'une signature capturée sur une route vers une autre.
+        route = "/werocket/v1/status"
+        message = f"{final_base_url}|{timestamp}|{route}"
         
         # 3. Signature HMAC-SHA256
         signature = hmac.new(
@@ -188,7 +189,8 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
             final_base_url = url.rstrip('/')
 
         timestamp = int(time.time())
-        message = f"{final_base_url}|{timestamp}|/werocket/v1/update-plugin"
+        route = "/werocket/v1/update-plugin"
+        message = f"{final_base_url}|{timestamp}|{route}"
         signature = hmac.new(
             WEROCKET_AGENT_TOKEN.encode('utf-8'),
             message.encode('utf-8'),
@@ -259,7 +261,8 @@ def update_core_via_agent(url: str) -> dict:
             final_base_url = url.rstrip('/')
 
         timestamp = int(time.time())
-        message = f"{final_base_url}|{timestamp}|/werocket/v1/update-core"
+        route = "/werocket/v1/update-core"
+        message = f"{final_base_url}|{timestamp}|{route}"
         signature = hmac.new(
             WEROCKET_AGENT_TOKEN.encode('utf-8'),
             message.encode('utf-8'),
