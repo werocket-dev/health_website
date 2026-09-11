@@ -101,6 +101,8 @@ class SiteResult(BaseModel):
     ia_score: Optional[int] = 0
     ia_status_contact: Optional[str] = "N/A"
     ia_score_contact: Optional[int] = 0
+    ia_status_mobile: Optional[str] = "N/A"
+    ia_score_mobile: Optional[int] = 0
     wp_version: Optional[str] = "N/A"
     php_version: Optional[str] = "N/A"
     theme: Optional[str] = "N/A"
@@ -181,6 +183,8 @@ async def get_results(request: Request, limit: int = 100):
                     score_ia as ia_score,
                     diagnostic_ia_contact as ia_status_contact,
                     score_ia_contact as ia_score_contact,
+                    diagnostic_ia_mobile as ia_status_mobile,
+                    score_ia_mobile as ia_score_mobile,
                     version_wp as wp_version,
                     version_php as php_version,
                     theme_actif as theme,

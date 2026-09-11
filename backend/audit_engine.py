@@ -778,6 +778,24 @@ async def run_audit(sites_list=None, progress_callback=None):
 
                 await page.screenshot(path=img_path)
 
+                # Capture mobile — contexte séparé avec un viewport fixe (390x844) qui
+                # matche celui utilisé pour générer le dataset d'entraînement, pour que
+                # l'IA évalue un rendu mobile réaliste plutôt qu'un desktop redimensionné.
+                mobile_img_path = f"{SCREENSHOT_DIR}/{clean_name}_mobile.png"
+                try:
+                    mobile_context = await browser.new_context(
+                        viewport={'width': 390, 'height': 844},
+                        user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                    )
+                    mobile_page = await mobile_context.new_page()
+                    await mobile_page.goto(url, wait_until="load", timeout=25000)
+                    await mobile_page.wait_for_timeout(4000)
+                    await mobile_page.screenshot(path=mobile_img_path)
+                    await mobile_page.close()
+                    await mobile_context.close()
+                except Exception:
+                    mobile_img_path = None
+
                 # Contact page capture — on stocke le chemin, TF sera appelé plus tard
                 from urllib.parse import urljoin
                 contact_img_path = None
@@ -912,6 +930,7 @@ async def run_audit(sites_list=None, progress_callback=None):
                     "project_name": project_name,
                     "url": url,
                     "img_path": img_path,
+                    "mobile_img_path": mobile_img_path,
                     "contact_img_path": contact_img_path,
                     "methode_scan": methode_scan,
                     "tech_info": tech_info,
@@ -965,8 +984,10 @@ async def run_audit(sites_list=None, progress_callback=None):
 
         diag_ia = predict_visual(entry["img_path"])
         diag_ia_contact = predict_visual(entry["contact_img_path"]) if entry.get("contact_img_path") else {"status": "N/A", "score": 0}
+        diag_ia_mobile = predict_visual(entry["mobile_img_path"]) if entry.get("mobile_img_path") else {"status": "N/A", "score": 0}
         entry["diag_ia"] = diag_ia
         entry["diag_ia_contact"] = diag_ia_contact
+        entry["diag_ia_mobile"] = diag_ia_mobile
 
         methode_scan = entry["methode_scan"]
         if methode_scan == "Agent":
@@ -974,7 +995,7 @@ async def run_audit(sites_list=None, progress_callback=None):
         else:
             stats["methode_scraping"] += 1
 
-        print(f"   🧠 {entry['project_name']} → IA: {diag_ia['status']} ({diag_ia['score']}%)")
+        print(f"   🧠 {entry['project_name']} → IA: {diag_ia['status']} ({diag_ia['score']}%) | Mobile: {diag_ia_mobile['status']} ({diag_ia_mobile['score']}%)")
 
     # ─────────────────────────────────────────────────────────────────────────
     # PHASE 3 : DB inserts + stats + rapport (aucun I/O bloquant ici)
@@ -987,6 +1008,7 @@ async def run_audit(sites_list=None, progress_callback=None):
 
         diag_ia = entry["diag_ia"]
         diag_ia_contact = entry["diag_ia_contact"]
+        diag_ia_mobile = entry["diag_ia_mobile"]
         project_id = entry["project_id"]
         project_name = entry["project_name"]
         url = entry["url"]
@@ -1012,6 +1034,8 @@ async def run_audit(sites_list=None, progress_callback=None):
             "ia_score": diag_ia["score"],
             "ia_status_contact": diag_ia_contact["status"],
             "ia_score_contact": diag_ia_contact["score"],
+            "ia_status_mobile": diag_ia_mobile["status"],
+            "ia_score_mobile": diag_ia_mobile["score"],
             "wp_version": version_wp,
             "php_version": version_php,
             "theme": theme_name,
@@ -1029,13 +1053,15 @@ async def run_audit(sites_list=None, progress_callback=None):
                         diagnostic_ia, score_ia, builder_detecte, version_builder,
                         version_wp, version_php, version_mysql, theme_actif, version_theme,
                         plugins_detectes, mises_a_jour, nb_updates,
-                        diagnostic_ia_contact, score_ia_contact
+                        diagnostic_ia_contact, score_ia_contact,
+                        diagnostic_ia_mobile, score_ia_mobile
                     ) VALUES (
                         :project_id, :project_name, :site_url, :statut, :methode,
                         :ia, :score, :build, :ver_build,
                         :ver_wp, :ver_php, :ver_mysql, :theme_name, :theme_ver,
                         :plugins, :updates, :nb_updates,
-                        :ia_contact, :score_contact
+                        :ia_contact, :score_contact,
+                        :ia_mobile, :score_mobile
                     )
                 """)
                 conn.execute(insert_sql, {
@@ -1048,6 +1074,8 @@ async def run_audit(sites_list=None, progress_callback=None):
                     "score": diag_ia["score"],
                     "ia_contact": diag_ia_contact["status"],
                     "score_contact": diag_ia_contact["score"],
+                    "ia_mobile": diag_ia_mobile["status"],
+                    "score_mobile": diag_ia_mobile["score"],
                     "build": tech_info["builder"],
                     "ver_build": tech_info["version"],
                     "ver_wp": version_wp,
@@ -1096,6 +1124,8 @@ async def run_audit(sites_list=None, progress_callback=None):
             "client": project_name,
             "url": url,
             "methode": methode_scan,
+            "ia_status_mobile": diag_ia_mobile["status"],
+            "ia_score_mobile": diag_ia_mobile["score"],
             "ia_status": diag_ia["status"],
             "ia_score": diag_ia["score"],
             "wp_version": version_wp,

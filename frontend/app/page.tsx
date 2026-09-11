@@ -15,6 +15,8 @@ type HealthResult = {
   ia_score: number | null;
   ia_status_contact?: IAStatus;
   ia_score_contact?: number | null;
+  ia_status_mobile?: IAStatus;
+  ia_score_mobile?: number | null;
   updates_count: number;
   mises_a_jour?: string | null;
   wp_version?: string | null;
@@ -109,6 +111,10 @@ export default function SanteDesSitesPage() {
         if (rankCA !== rankCB) return rankCA - rankCB;
         const contactA = a.ia_score_contact ?? 100, contactB = b.ia_score_contact ?? 100;
         if (contactA !== contactB) return contactA - contactB;
+        const rankMA = statusRank(a.ia_status_mobile ?? ""), rankMB = statusRank(b.ia_status_mobile ?? "");
+        if (rankMA !== rankMB) return rankMA - rankMB;
+        const mobileA = a.ia_score_mobile ?? 100, mobileB = b.ia_score_mobile ?? 100;
+        if (mobileA !== mobileB) return mobileA - mobileB;
         return b.updates_count - a.updates_count;
       });
       setResults(sorted);
@@ -431,11 +437,12 @@ export default function SanteDesSitesPage() {
                 color: "rgba(23,25,28,0.55)",
               }}
             >
-              <div className="col-span-3">Client</div>
+              <div className="col-span-2">Client</div>
               <div className="col-span-2">IA Accueil</div>
               <div className="col-span-2">IA Contact</div>
+              <div className="col-span-2">IA Mobile</div>
               <div className="col-span-2">Mises a jour</div>
-              <div className="col-span-3">Versions</div>
+              <div className="col-span-2">Versions</div>
             </div>
 
             {results.length === 0 ? (
@@ -473,7 +480,7 @@ export default function SanteDesSitesPage() {
                     style={{ borderColor: "rgba(23,25,28,0.06)" }}
                   >
                     <div className="grid grid-cols-12 gap-4 px-6 py-4 text-sm items-center transition-colors hover:bg-[rgba(23,25,28,0.03)]">
-                      <div className={`col-span-3 ${clientStyle(result)}`}>
+                      <div className={`col-span-2 ${clientStyle(result)}`}>
                         {result.client}
                       </div>
                       <div className="col-span-2">
@@ -492,6 +499,22 @@ export default function SanteDesSitesPage() {
                           iaBadge(
                             result.ia_status_contact,
                             result.ia_score_contact ?? null,
+                          )
+                        )}
+                      </div>
+                      <div className="col-span-2">
+                        {result.ia_status_mobile === "N/A" ||
+                        !result.ia_status_mobile ? (
+                          <span
+                            className="text-xs"
+                            style={{ color: "rgba(23,25,28,0.35)" }}
+                          >
+                            —
+                          </span>
+                        ) : (
+                          iaBadge(
+                            result.ia_status_mobile,
+                            result.ia_score_mobile ?? null,
                           )
                         )}
                       </div>
@@ -525,7 +548,7 @@ export default function SanteDesSitesPage() {
                           </span>
                         )}
                       </div>
-                      <div className="col-span-3 text-xs space-y-1">
+                      <div className="col-span-2 text-xs space-y-1">
                         <div className="flex items-center gap-1.5">
                           <span
                             className="font-medium"
