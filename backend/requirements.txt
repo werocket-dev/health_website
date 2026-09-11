@@ -24,6 +24,7 @@ scikit-learn==1.8.0
 playwright==1.58.0
 requests==2.32.5
 beautifulsoup4==4.12.3
+pynacl==1.6.2
 
 # ============================================
 # API - FastAPI et serveur

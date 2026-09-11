@@ -7,23 +7,25 @@ from playwright.async_api import async_playwright
 from sqlalchemy import create_engine, text
 import requests
 import re
-import hmac
-import hashlib
 import time
 import json
+from nacl.signing import SigningKey
 from dotenv import load_dotenv
 
 # --- INITIALISATION ---
 load_dotenv()
 
-# ... (Garde la partie vérification des clés WEROCKET_AGENT_TOKEN comme avant) ...
-WEROCKET_AGENT_TOKEN = os.getenv("WEROCKET_AGENT_TOKEN")
-WEROCKET_AGENT_HEADER_KEY = os.getenv("WEROCKET_AGENT_HEADER_KEY")
+WEROCKET_PRIVATE_KEY_HEX = os.getenv("WEROCKET_PRIVATE_KEY_HEX")
+WEROCKET_AGENT_HEADER_KEY = os.getenv("WEROCKET_AGENT_HEADER_KEY")  # inchangé, indépendant
 
-if not WEROCKET_AGENT_TOKEN or not WEROCKET_AGENT_HEADER_KEY:
+if not WEROCKET_PRIVATE_KEY_HEX:
     AGENT_AVAILABLE = False
+    _signing_key = None
 else:
     AGENT_AVAILABLE = True
+    # PyNaCl attend le "seed" 32 octets (64 caractères hex) — pas le format
+    # libsodium 64 octets (128 hex) qui concatène seed+clé publique.
+    _signing_key = SigningKey(bytes.fromhex(WEROCKET_PRIVATE_KEY_HEX[:64]))
 
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), "results.json")
 
@@ -110,16 +112,11 @@ def connect_to_agent(url):
         route = "/werocket/v1/status"
         message = f"{final_base_url}|{timestamp}|{route}"
         
-        # 3. Signature HMAC-SHA256
-        signature = hmac.new(
-            WEROCKET_AGENT_TOKEN.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        
+        # 3. Signature Ed25519 (clé privée jamais transmise, contrairement au HMAC partagé)
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
+
         # 4. Données POST
         payload = {
-            'token': WEROCKET_AGENT_TOKEN,
             'timestamp': timestamp,
             'signature': signature
         }
@@ -191,14 +188,9 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
         timestamp = int(time.time())
         route = "/werocket/v1/update-plugin"
         message = f"{final_base_url}|{timestamp}|{route}"
-        signature = hmac.new(
-            WEROCKET_AGENT_TOKEN.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
 
         payload = {
-            'token': WEROCKET_AGENT_TOKEN,
             'timestamp': timestamp,
             'signature': signature,
             'plugin_slug': plugin_slug,
@@ -263,14 +255,9 @@ def update_core_via_agent(url: str) -> dict:
         timestamp = int(time.time())
         route = "/werocket/v1/update-core"
         message = f"{final_base_url}|{timestamp}|{route}"
-        signature = hmac.new(
-            WEROCKET_AGENT_TOKEN.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
 
         payload = {
-            'token': WEROCKET_AGENT_TOKEN,
             'timestamp': timestamp,
             'signature': signature,
         }
@@ -1285,7 +1272,7 @@ async def run_audit(sites_list=None, progress_callback=None):
 #     🎯 CONFIGURATION INITIALE (Première utilisation uniquement)
 #     
 #     1. Configurer les secrets dans le fichier .env :
-#        WEROCKET_AGENT_TOKEN=votre_token_secret
+#        WEROCKET_PRIVATE_KEY_HEX=votre_cle_privee_ed25519
 #        WEROCKET_AGENT_HEADER_KEY=votre_header_secret
 #        
 #     2. Créer les colonnes dans PostgreSQL :
