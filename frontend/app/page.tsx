@@ -157,6 +157,18 @@ export default function SanteDesSitesPage() {
     }
   };
 
+  const handleUpdateCore = async (siteUrl: string) => {
+    const key = `${siteUrl}::wp-core`;
+
+    setUpdatingPlugins((prev) => ({ ...prev, [key]: "loading" }));
+    try {
+      await axios.post(`${API_URL}/api/update-core`, { url: siteUrl });
+      setUpdatingPlugins((prev) => ({ ...prev, [key]: "success" }));
+    } catch {
+      setUpdatingPlugins((prev) => ({ ...prev, [key]: "error" }));
+    }
+  };
+
   const handleLaunchAudit = async () => {
     if (!API_URL) { alert("API non configurée."); return; }
     try {
@@ -528,9 +540,28 @@ export default function SanteDesSitesPage() {
                             result.wp_version &&
                             result.wp_version !== "N/A" &&
                             result.wp_version !== latestWP && (
-                              <span className="text-orange-500">
-                                → {latestWP}
-                              </span>
+                              <>
+                                <span className="text-orange-500">
+                                  → {latestWP}
+                                </span>
+                                {(() => {
+                                  const coreKey = `${result.url}::wp-core`;
+                                  const coreState = updatingPlugins[coreKey];
+                                  return (
+                                    <button
+                                      onClick={() => handleUpdateCore(result.url)}
+                                      disabled={!!coreState}
+                                      className="shrink-0 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                                      style={{
+                                        background: coreState === "success" ? "rgba(0,226,158,0.15)" : coreState === "error" ? "rgba(220,38,38,0.1)" : "rgba(0,55,62,0.1)",
+                                        color: coreState === "success" ? "#087A61" : coreState === "error" ? "#dc2626" : "var(--color-deep-teal)",
+                                      }}
+                                    >
+                                      {coreState === "loading" ? "..." : coreState === "success" ? "✓ OK" : coreState === "error" ? "✗ Erreur" : "Mettre à jour"}
+                                    </button>
+                                  );
+                                })()}
+                              </>
                             )}
                         </div>
                         <div className="flex items-center gap-1.5">

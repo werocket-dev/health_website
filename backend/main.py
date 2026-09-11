@@ -11,7 +11,7 @@ from typing import List, Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
-from audit_engine import run_audit, update_plugin_via_agent, RESULTS_FILE
+from audit_engine import run_audit, update_plugin_via_agent, update_core_via_agent, RESULTS_FILE
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -84,6 +84,14 @@ class PluginUpdateRequest(BaseModel):
 class PluginUpdateResponse(BaseModel):
     success: bool
     message: str
+
+class CoreUpdateRequest(BaseModel):
+    url: str
+
+class CoreUpdateResponse(BaseModel):
+    success: bool
+    message: str
+    version: Optional[str] = None
 
 class SiteResult(BaseModel):
     """Correspondance avec les données envoyées au Dashboard"""
@@ -201,6 +209,18 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
     result = await asyncio.to_thread(update_plugin_via_agent, body.url, body.plugin_slug)
     if result.get('success'):
         return PluginUpdateResponse(success=True, message=result.get('message', 'Plugin mis à jour avec succès'))
+    raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
+
+@app.post("/api/update-core", response_model=CoreUpdateResponse)
+async def update_core(request: Request, body: CoreUpdateRequest):
+    """
+    Déclenche la mise à jour du core WordPress via l'Agent WordPress.
+    """
+    print(f"[audit] /api/update-core from {request.client.host} url={body.url}")
+    import asyncio
+    result = await asyncio.to_thread(update_core_via_agent, body.url)
+    if result.get('success'):
+        return CoreUpdateResponse(success=True, message=result.get('message', 'WordPress mis à jour avec succès'), version=result.get('version'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.get("/api/progress")

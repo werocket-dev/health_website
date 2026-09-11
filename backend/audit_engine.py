@@ -104,10 +104,10 @@ def connect_to_agent(url):
         # 1. Génération du timestamp
         timestamp = int(time.time())
         
-        # 2. Construction du message à signer : URL_ORIGINE|timestamp
+        # 2. Construction du message à signer : URL_ORIGINE|timestamp|route
         # ⚠️ IMPORTANT : On signe avec l'URL que le plugin connait (souvent celle de la DB WP)
         # Mais pour être sûr, on utilise l'URL finale trouvée
-        message = f"{final_base_url}|{timestamp}"
+        message = f"{final_base_url}|{timestamp}|/werocket/v1/status"
         
         # 3. Signature HMAC-SHA256
         signature = hmac.new(
@@ -188,7 +188,7 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
             final_base_url = url.rstrip('/')
 
         timestamp = int(time.time())
-        message = f"{final_base_url}|{timestamp}"
+        message = f"{final_base_url}|{timestamp}|/werocket/v1/update-plugin"
         signature = hmac.new(
             WEROCKET_AGENT_TOKEN.encode('utf-8'),
             message.encode('utf-8'),
@@ -230,6 +230,76 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
 
         elif response.status_code == 404:
             return {'success': False, 'error': '404 - Route update non disponible (plugin WP à mettre à jour)'}
+        elif response.status_code == 403:
+            return {'success': False, 'error': '403 - Accès refusé (clé invalide)'}
+
+        return {'success': False, 'error': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        return {'success': False, 'error': str(e)[:80]}
+
+def update_core_via_agent(url: str) -> dict:
+    """
+    Déclenche la mise à jour du core WordPress via l'Agent WeRocket.
+    Timeout élevé (60s) pour laisser WP télécharger et installer le core.
+    """
+    if not AGENT_AVAILABLE:
+        return {'success': False, 'error': 'Agent non configuré (variables .env manquantes)'}
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        try:
+            pre_check = session.head(url, timeout=5, allow_redirects=True)
+            final_base_url = pre_check.url.rstrip('/')
+        except Exception:
+            final_base_url = url.rstrip('/')
+
+        timestamp = int(time.time())
+        message = f"{final_base_url}|{timestamp}|/werocket/v1/update-core"
+        signature = hmac.new(
+            WEROCKET_AGENT_TOKEN.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+
+        payload = {
+            'token': WEROCKET_AGENT_TOKEN,
+            'timestamp': timestamp,
+            'signature': signature,
+        }
+
+        headers = {
+            'X-WeRocket-Key': WEROCKET_AGENT_HEADER_KEY,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        endpoint = f"{final_base_url}/wp-json/werocket/v1/update-core"
+        print(f"      🔧 Mise à jour du core WordPress sur : {endpoint}")
+
+        response = session.post(
+            endpoint,
+            json=payload,
+            headers=headers,
+            timeout=60,
+            verify=True
+        )
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if data.get('success'):
+                    return {'success': True, 'message': data.get('message', 'WordPress mis à jour'), 'version': data.get('version')}
+                return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
+            except json.JSONDecodeError:
+                return {'success': False, 'error': 'Réponse non-JSON depuis WordPress'}
+
+        elif response.status_code == 404:
+            return {'success': False, 'error': "404 - Route update-core non disponible (plugin WeRocket Agent à mettre à jour)"}
         elif response.status_code == 403:
             return {'success': False, 'error': '403 - Accès refusé (clé invalide)'}
 
@@ -611,31 +681,19 @@ async def run_audit(sites_list=None, progress_callback=None):
     if sites_list is None:
         # Mode par défaut : liste statique des sites clients
         sites = [
-            {"Client": "aasec", "URL": "https://aasec.ch"},
-            {"Client": "abcjardinmontelimar", "URL": "https://abc-jardin-montelimar.com"},
-            {"Client": "adourirrigation", "URL": "https://adour-irrigation.fr"},
-            {"Client": "afcafcommunication", "URL": "https://afc.werocket.ovh"},
-            {"Client": "aft", "URL": "https://aft-pompiers.fr"},
-            {"Client": "aideaujardin", "URL": "https://aide-au-jardin.com"},
-            {"Client": "aledelectricite", "URL": "https://aledelectricite.fr"},
-            {"Client": "alexpaceurl", "URL": "https://alexpaceurl.fr"},
-            {"Client": "alletto", "URL": "https://alletto.fr"},
-            {"Client": "amccentreprise", "URL": "https://amcc-entreprise.fr"},
-            {"Client": "amlferraz", "URL": "https://amlferraz.fr"},
-            {"Client": "ampelectricite", "URL": "https://amp-electricite.fr"},
-            {"Client": "annequillacq", "URL": "https://anne-quillacq-sophrologue-28.fr"},
-            {"Client": "armorenrobecreation", "URL": "https://armor-enrobe-creation.fr"},
-            {"Client": "artisan4saisons", "URL": "https://artisan4saisons.fr"},
-            {"Client": "atisecurite", "URL": "https://ati-securite.com"},
-            {"Client": "aufournildesvignes", "URL": "https://aufournildesvignes.fr"},
-            {"Client": "aufournilmathalien", "URL": "https://aufournilmathalien.fr"},
-            {"Client": "bcfersetmetaux", "URL": "https://bc-fersetmetaux.fr"},
-            {"Client": "bmacouverture", "URL": "https://bmacouverture.fr"},
-            {"Client": "boucheriechezvinc", "URL": "https://boucheriechezvincent.fr"},
-            {"Client": "brbautopro", "URL": "https://brbautopro.com"},
-            {"Client": "bsc62", "URL": "https://bsc-62.fr"},
-            {"Client": "campingcotedalbatre", "URL": "https://campingcotedalbatre.com"},
- 
+            {"Client": "laminaudiere", "URL": "https://www.institutlaminaudiere.fr/"},
+            {"Client": "orchestreufo", "URL": "https://www.ufo-orchestre.com"},
+            {"Client": "provenceassurancecourt", "URL": "https://www.provence-assurance.fr"},
+            {"Client": "jolimome", "URL": "https://www.joli-mome.fr"},
+            {"Client": "orijinbtp", "URL": "https://www.orijinbtp.fr/"},
+            {"Client": "isoreve", "URL": "https://www.isoreve.com/"},
+            {"Client": "medsenger", "URL": "https://www.medsenger.fr"},
+            {"Client": "ancienafcom", "URL": "https://www.afcommunication.com/"},
+            {"Client": "ancienaft", "URL": "https://www.aft-pompiers.fr/"},
+            {"Client": "lbphotographies", "URL": "https://www.lbphotographies.fr"},
+            {"Client": "maitredoeuvre", "URL": "https://lemaitredoeuvre.fr/"},
+            {"Client": "peugeotlaffitte", "URL": "https://www.peugeotlaffitte.fr/"},
+            {"Client": "corindustries", "URL": "https://www.cor-industries.com/"},
         ]
     else:
         # Mode API : utilise la liste fournie en paramètre
