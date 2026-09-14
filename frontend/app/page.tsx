@@ -480,8 +480,34 @@ export default function SanteDesSitesPage() {
                     style={{ borderColor: "rgba(23,25,28,0.06)" }}
                   >
                     <div className="grid grid-cols-12 gap-4 px-6 py-4 text-sm items-center transition-colors hover:bg-[rgba(23,25,28,0.03)]">
-                      <div className={`col-span-2 ${clientStyle(result)}`}>
-                        {result.client}
+                      <div className="col-span-2">
+                        <a
+                          href={
+                            result.url.startsWith("http")
+                              ? result.url
+                              : `https://${result.url}`
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`inline-flex items-center gap-1.5 hover:underline ${clientStyle(result)}`}
+                        >
+                          {result.client}
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="shrink-0 opacity-50"
+                          >
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <path d="M15 3h6v6" />
+                            <path d="M10 14 21 3" />
+                          </svg>
+                        </a>
                       </div>
                       <div className="col-span-2">
                         {iaBadge(result.ia_status, result.ia_score)}
