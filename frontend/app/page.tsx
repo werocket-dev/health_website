@@ -438,18 +438,18 @@ export default function SanteDesSitesPage() {
             }}
           >
             <div
-              className="grid grid-cols-12 gap-4 px-6 py-3 text-xs font-semibold uppercase tracking-wide"
+              className="flex gap-4 px-6 py-3 text-xs font-semibold uppercase tracking-wide"
               style={{
                 background: "rgba(23,25,28,0.04)",
                 color: "rgba(23,25,28,0.55)",
               }}
             >
-              <div className="col-span-2">Client</div>
-              <div className="col-span-1">IA Accueil</div>
-              <div className="col-span-1">IA Contact</div>
-              <div className="col-span-1">IA Mobile</div>
-              <div className="col-span-2">Mises a jour</div>
-              <div className="col-span-5">Versions</div>
+              <div className="w-48 shrink-0">Client</div>
+              <div className="w-28 shrink-0">IA Accueil</div>
+              <div className="w-28 shrink-0">IA Contact</div>
+              <div className="w-28 shrink-0">IA Mobile</div>
+              <div className="w-40 shrink-0">Mises a jour</div>
+              <div className="w-72 shrink-0">Versions</div>
             </div>
 
             {results.length === 0 ? (
@@ -486,8 +486,8 @@ export default function SanteDesSitesPage() {
                     className="border-b last:border-0"
                     style={{ borderColor: "rgba(23,25,28,0.06)" }}
                   >
-                    <div className="grid grid-cols-12 gap-4 px-6 py-4 text-sm items-center transition-colors hover:bg-[rgba(23,25,28,0.03)]">
-                      <div className="col-span-2">
+                    <div className="flex gap-4 px-6 py-4 text-sm items-center transition-colors hover:bg-[rgba(23,25,28,0.03)]">
+                      <div className="w-48 shrink-0">
                         <a
                           href={
                             result.url.startsWith("http")
@@ -516,10 +516,10 @@ export default function SanteDesSitesPage() {
                           </svg>
                         </a>
                       </div>
-                      <div className="col-span-1">
+                      <div className="w-28 shrink-0">
                         {iaBadge(result.ia_status, result.ia_score)}
                       </div>
-                      <div className="col-span-1">
+                      <div className="w-28 shrink-0">
                         {result.ia_status_contact === "N/A" ||
                         !result.ia_status_contact ? (
                           <span
@@ -535,7 +535,7 @@ export default function SanteDesSitesPage() {
                           )
                         )}
                       </div>
-                      <div className="col-span-1">
+                      <div className="w-28 shrink-0">
                         {result.ia_status_mobile === "N/A" ||
                         !result.ia_status_mobile ? (
                           <span
@@ -551,7 +551,7 @@ export default function SanteDesSitesPage() {
                           )
                         )}
                       </div>
-                      <div className="col-span-2">
+                      <div className="w-40 shrink-0">
                         {result.updates_count > 0 ? (
                           <button
                             onClick={() =>
@@ -581,7 +581,7 @@ export default function SanteDesSitesPage() {
                           </span>
                         )}
                       </div>
-                      <div className="col-span-5 text-xs space-y-1">
+                      <div className="w-72 shrink-0 text-xs space-y-1">
                         <div className="flex items-center gap-1.5">
                           <span
                             className="font-medium"
