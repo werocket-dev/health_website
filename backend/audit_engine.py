@@ -313,6 +313,8 @@ def parse_agent_data(data):
     theme_name = theme.get('name', 'N/A')
     theme_version = theme.get('version', 'N/A')
 
+    licenses_info = data.get('licenses', {})
+
     plugins_data = data.get('plugins', [])
     plugins_dict = {}
     updates_needed = []
@@ -363,6 +365,7 @@ def parse_agent_data(data):
         "version_mysql": version_mysql,
         "theme_name": theme_name,
         "theme_version": theme_version,
+        "licenses": licenses_info,
         "plugins_dict": plugins_dict,
         "tech_info": {"builder": builder, "version": builder_version},
         "updates_info": {
@@ -940,6 +943,7 @@ async def run_audit(sites_list=None, progress_callback=None):
                     version_mysql = parsed["version_mysql"]
                     theme_name = parsed["theme_name"]
                     theme_version = parsed["theme_version"]
+                    licenses_info = parsed["licenses"]
                     plugins_dict = parsed["plugins_dict"]
                     tech_info = parsed["tech_info"]
                     updates_info = parsed["updates_info"]
@@ -968,6 +972,7 @@ async def run_audit(sites_list=None, progress_callback=None):
                     version_mysql = "N/A (Scraping)"
                     theme_name = "N/A (Scraping)"
                     theme_version = "N/A (Scraping)"
+                    licenses_info = {}
 
                     print(f"   ✅ [SCRAPING] Builder: {tech_info['builder']} | Plugins: {len(plugins_dict)} | MAJ: {updates_info['count_updates']}")
 
@@ -988,6 +993,7 @@ async def run_audit(sites_list=None, progress_callback=None):
                     "version_mysql": version_mysql,
                     "theme_name": theme_name,
                     "theme_version": theme_version,
+                    "licenses": licenses_info,
                     "wp_detecte": wp_detecte,
                     "agent_error": agent_result.get('error') if agent_result and not agent_result.get('success') else None,
                     "success": True,
@@ -1069,6 +1075,7 @@ async def run_audit(sites_list=None, progress_callback=None):
         theme_name = entry["theme_name"]
         theme_version = entry["theme_version"]
         wp_detecte = entry["wp_detecte"]
+        licenses_info = entry.get("licenses", {})
 
         plugins_list = ", ".join([f"{k} ({v})" for k, v in plugins_dict.items()]) or "Aucun détecté"
         updates_list = ", ".join(updates_info.get("updates_needed", [])) or "Aucune"
@@ -1090,6 +1097,7 @@ async def run_audit(sites_list=None, progress_callback=None):
             "updates_count": updates_info["count_updates"],
             "mises_a_jour": updates_list,
             "methode": methode_scan,
+            "licenses": licenses_info,
         })
 
         try:
@@ -1101,14 +1109,16 @@ async def run_audit(sites_list=None, progress_callback=None):
                         version_wp, version_php, version_mysql, theme_actif, version_theme,
                         plugins_detectes, mises_a_jour, nb_updates,
                         diagnostic_ia_contact, score_ia_contact,
-                        diagnostic_ia_mobile, score_ia_mobile
+                        diagnostic_ia_mobile, score_ia_mobile,
+                        licenses_json
                     ) VALUES (
                         :project_id, :project_name, :site_url, :statut, :methode,
                         :ia, :score, :build, :ver_build,
                         :ver_wp, :ver_php, :ver_mysql, :theme_name, :theme_ver,
                         :plugins, :updates, :nb_updates,
                         :ia_contact, :score_contact,
-                        :ia_mobile, :score_mobile
+                        :ia_mobile, :score_mobile,
+                        :licenses
                     )
                 """)
                 conn.execute(insert_sql, {
@@ -1123,6 +1133,7 @@ async def run_audit(sites_list=None, progress_callback=None):
                     "score_contact": diag_ia_contact["score"],
                     "ia_mobile": diag_ia_mobile["status"],
                     "score_mobile": diag_ia_mobile["score"],
+                    "licenses": json.dumps(licenses_info),
                     "build": tech_info["builder"],
                     "ver_build": tech_info["version"],
                     "ver_wp": version_wp,
