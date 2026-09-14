@@ -444,12 +444,12 @@ export default function SanteDesSitesPage() {
                 color: "rgba(23,25,28,0.55)",
               }}
             >
-              <div className="col-span-2">Client</div>
-              <div className="col-span-2">IA Accueil</div>
-              <div className="col-span-2">IA Contact</div>
-              <div className="col-span-2">IA Mobile</div>
+              <div className="col-span-1">Client</div>
+              <div className="col-span-1">IA Accueil</div>
+              <div className="col-span-1">IA Contact</div>
+              <div className="col-span-1">IA Mobile</div>
               <div className="col-span-2">Mises a jour</div>
-              <div className="col-span-2">Versions</div>
+              <div className="col-span-6">Versions</div>
             </div>
 
             {results.length === 0 ? (
@@ -487,7 +487,7 @@ export default function SanteDesSitesPage() {
                     style={{ borderColor: "rgba(23,25,28,0.06)" }}
                   >
                     <div className="grid grid-cols-12 gap-4 px-6 py-4 text-sm items-center transition-colors hover:bg-[rgba(23,25,28,0.03)]">
-                      <div className="col-span-2">
+                      <div className="col-span-1">
                         <a
                           href={
                             result.url.startsWith("http")
@@ -516,10 +516,10 @@ export default function SanteDesSitesPage() {
                           </svg>
                         </a>
                       </div>
-                      <div className="col-span-2">
+                      <div className="col-span-1">
                         {iaBadge(result.ia_status, result.ia_score)}
                       </div>
-                      <div className="col-span-2">
+                      <div className="col-span-1">
                         {result.ia_status_contact === "N/A" ||
                         !result.ia_status_contact ? (
                           <span
@@ -535,7 +535,7 @@ export default function SanteDesSitesPage() {
                           )
                         )}
                       </div>
-                      <div className="col-span-2">
+                      <div className="col-span-1">
                         {result.ia_status_mobile === "N/A" ||
                         !result.ia_status_mobile ? (
                           <span
@@ -581,7 +581,7 @@ export default function SanteDesSitesPage() {
                           </span>
                         )}
                       </div>
-                      <div className="col-span-2 text-xs space-y-1">
+                      <div className="col-span-6 text-xs space-y-1">
                         <div className="flex items-center gap-1.5">
                           <span
                             className="font-medium"
@@ -633,7 +633,7 @@ export default function SanteDesSitesPage() {
                         </div>
                         {result.licenses &&
                           Object.entries(result.licenses).map(([key, lic]) => (
-                            <div key={key} className="flex items-center gap-1.5">
+                            <div key={key} className="flex items-center gap-1.5 whitespace-nowrap">
                               <span
                                 className="font-medium capitalize"
                                 style={{ color: "rgba(23,25,28,0.75)" }}
