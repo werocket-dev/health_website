@@ -11,7 +11,7 @@ from typing import List, Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
-from audit_engine import run_audit, update_plugin_via_agent, update_core_via_agent, RESULTS_FILE
+from audit_engine import run_audit, update_plugin_via_agent, update_core_via_agent, refresh_site_in_results, RESULTS_FILE
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -212,6 +212,9 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
     import asyncio
     result = await asyncio.to_thread(update_plugin_via_agent, body.url, body.plugin_slug)
     if result.get('success'):
+        refresh = await asyncio.to_thread(refresh_site_in_results, body.url)
+        if not refresh.get('success'):
+            print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return PluginUpdateResponse(success=True, message=result.get('message', 'Plugin mis à jour avec succès'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
@@ -224,6 +227,9 @@ async def update_core(request: Request, body: CoreUpdateRequest):
     import asyncio
     result = await asyncio.to_thread(update_core_via_agent, body.url)
     if result.get('success'):
+        refresh = await asyncio.to_thread(refresh_site_in_results, body.url)
+        if not refresh.get('success'):
+            print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return CoreUpdateResponse(success=True, message=result.get('message', 'WordPress mis à jour avec succès'), version=result.get('version'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 

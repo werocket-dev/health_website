@@ -299,6 +299,127 @@ def update_core_via_agent(url: str) -> dict:
         return {'success': False, 'error': str(e)[:80]}
 
 
+def parse_agent_data(data):
+    """
+    Transforme la réponse brute de l'Agent WordPress (/status) en champs exploitables
+    par le reste du pipeline (run_audit et le rafraîchissement post-update).
+    """
+    versions = data.get('versions', {})
+    version_wp = versions.get('wordpress', 'N/A')
+    version_php = versions.get('php', 'N/A')
+    version_mysql = versions.get('mysql', 'N/A')
+
+    theme = data.get('theme', {})
+    theme_name = theme.get('name', 'N/A')
+    theme_version = theme.get('version', 'N/A')
+
+    plugins_data = data.get('plugins', [])
+    plugins_dict = {}
+    updates_needed = []
+    updates_needed_raw = []
+
+    for plugin in plugins_data:
+        plugin_name = plugin.get('name', 'Inconnu')
+        plugin_version = plugin.get('version', 'N/A')
+        is_active = plugin.get('is_active', False)
+        update_available = plugin.get('update_available', {})
+
+        status = "Actif" if is_active else "Inactif"
+        plugins_dict[plugin_name] = f"{plugin_version} ({status})"
+
+        if update_available.get('available'):
+            new_version = update_available.get('new_version')
+            gap_analysis = analyze_version_gap(plugin_version, new_version)
+            update_msg = f"{gap_analysis['emoji']} {plugin_name} ({plugin_version} → {new_version}) - {gap_analysis['risk']}: {gap_analysis['message']}"
+            plugin_slug_real = plugin.get('slug', '')
+            stored_msg = f"{plugin_slug_real}||{update_msg}" if plugin_slug_real else update_msg
+            updates_needed.append(stored_msg)
+            updates_needed_raw.append({
+                'message': update_msg,
+                'priority': gap_analysis['priority'],
+                'plugin': plugin_name,
+                'current': plugin_version,
+                'latest': new_version,
+                'risk': gap_analysis['risk']
+            })
+
+    updates_needed_raw.sort(key=lambda x: x['priority'], reverse=True)
+
+    builder = "Inconnu"
+    builder_version = "N/A"
+    if any('Divi' in p for p in plugins_dict.keys()):
+        builder = "Divi"
+        builder_version = next((v.split('(')[0].strip() for k, v in plugins_dict.items() if 'Divi' in k), 'N/A')
+    elif any('Elementor' in p for p in plugins_dict.keys()):
+        builder = "Elementor"
+        builder_version = next((v.split('(')[0].strip() for k, v in plugins_dict.items() if 'Elementor' in k), 'N/A')
+    elif any('Breakdance' in p for p in plugins_dict.keys()):
+        builder = "Breakdance"
+        builder_version = next((v.split('(')[0].strip() for k, v in plugins_dict.items() if 'Breakdance' in k), 'N/A')
+
+    return {
+        "version_wp": version_wp,
+        "version_php": version_php,
+        "version_mysql": version_mysql,
+        "theme_name": theme_name,
+        "theme_version": theme_version,
+        "plugins_dict": plugins_dict,
+        "tech_info": {"builder": builder, "version": builder_version},
+        "updates_info": {
+            "count_updates": len(updates_needed),
+            "updates_needed": updates_needed,
+            "updates_needed_raw": updates_needed_raw
+        },
+    }
+
+
+def refresh_site_in_results(url: str) -> dict:
+    """
+    Après une mise à jour de plugin/core réussie, re-interroge l'Agent WordPress sur
+    CE site pour rafraîchir son entrée dans results.json (versions, plugins, MAJ
+    restantes) — sans relancer un audit complet (pas de nouveau screenshot/IA).
+    """
+    agent_result = connect_to_agent(url)
+    if not agent_result or not agent_result.get('success'):
+        return {'success': False, 'error': agent_result.get('error') if agent_result else 'Agent injoignable'}
+
+    parsed = parse_agent_data(agent_result['data'])
+    plugins_list = ", ".join([f"{k} ({v})" for k, v in parsed["plugins_dict"].items()]) or "Aucun détecté"
+    updates_list = ", ".join(parsed["updates_info"]["updates_needed"]) or "Aucune"
+
+    if not os.path.exists(RESULTS_FILE):
+        return {'success': False, 'error': 'results.json introuvable'}
+
+    try:
+        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+            results = json.load(f)
+    except Exception as e:
+        return {'success': False, 'error': f'Lecture results.json échouée: {e}'}
+
+    updated = False
+    for entry in results:
+        if entry.get("url") == url:
+            entry["wp_version"] = parsed["version_wp"]
+            entry["php_version"] = parsed["version_php"]
+            entry["builder"] = parsed["tech_info"]["builder"]
+            entry["updates_count"] = parsed["updates_info"]["count_updates"]
+            entry["mises_a_jour"] = updates_list
+            entry["methode"] = "Agent"
+            updated = True
+            break
+
+    if not updated:
+        return {'success': False, 'error': "Site absent de results.json (pas encore audité)"}
+
+    try:
+        with open(RESULTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return {'success': False, 'error': f'Écriture results.json échouée: {e}'}
+
+    return {'success': True, 'updates_count': parsed["updates_info"]["count_updates"]}
+
+
 def scan_tech(html_content):
     """Scan technique à partir du HTML déjà récupéré par Playwright (avec JS exécuté)"""
     results = {"wp": "Non", "builder": "Inconnu", "version": "N/A", "html": html_content}
@@ -671,19 +792,7 @@ async def run_audit(sites_list=None, progress_callback=None):
     if sites_list is None:
         # Mode par défaut : liste statique des sites clients
         sites = [
-            {"Client": "laminaudiere", "URL": "https://www.institutlaminaudiere.fr/"},
-            {"Client": "orchestreufo", "URL": "https://www.ufo-orchestre.com"},
-            {"Client": "provenceassurancecourt", "URL": "https://www.provence-assurance.fr"},
-            {"Client": "jolimome", "URL": "https://www.joli-mome.fr"},
-            {"Client": "orijinbtp", "URL": "https://www.orijinbtp.fr/"},
-            {"Client": "isoreve", "URL": "https://www.isoreve.com/"},
-            {"Client": "medsenger", "URL": "https://www.medsenger.fr"},
-            {"Client": "ancienafcom", "URL": "https://www.afcommunication.com/"},
-            {"Client": "ancienaft", "URL": "https://www.aft-pompiers.fr/"},
-            {"Client": "lbphotographies", "URL": "https://www.lbphotographies.fr"},
-            {"Client": "maitredoeuvre", "URL": "https://lemaitredoeuvre.fr/"},
-            {"Client": "peugeotlaffitte", "URL": "https://www.peugeotlaffitte.fr/"},
-            {"Client": "corindustries", "URL": "https://www.cor-industries.com/"},
+            {"Client": "Evasion Immo", "URL": "https://www.evasion2alpesimmo.fr/"},
         ]
     else:
         # Mode API : utilise la liste fournie en paramètre
@@ -825,69 +934,17 @@ async def run_audit(sites_list=None, progress_callback=None):
                     methode_scan = "Agent"
                     wp_detecte = True
 
-                    data = agent_result['data']
+                    parsed = parse_agent_data(agent_result['data'])
+                    version_wp = parsed["version_wp"]
+                    version_php = parsed["version_php"]
+                    version_mysql = parsed["version_mysql"]
+                    theme_name = parsed["theme_name"]
+                    theme_version = parsed["theme_version"]
+                    plugins_dict = parsed["plugins_dict"]
+                    tech_info = parsed["tech_info"]
+                    updates_info = parsed["updates_info"]
 
-                    versions = data.get('versions', {})
-                    version_wp = versions.get('wordpress', 'N/A')
-                    version_php = versions.get('php', 'N/A')
-                    version_mysql = versions.get('mysql', 'N/A')
-
-                    theme = data.get('theme', {})
-                    theme_name = theme.get('name', 'N/A')
-                    theme_version = theme.get('version', 'N/A')
-
-                    plugins_data = data.get('plugins', [])
-                    plugins_dict = {}
-                    updates_needed = []
-                    updates_needed_raw = []
-
-                    for plugin in plugins_data:
-                        plugin_name = plugin.get('name', 'Inconnu')
-                        plugin_version = plugin.get('version', 'N/A')
-                        is_active = plugin.get('is_active', False)
-                        update_available = plugin.get('update_available', {})
-
-                        status = "Actif" if is_active else "Inactif"
-                        plugins_dict[plugin_name] = f"{plugin_version} ({status})"
-
-                        if update_available.get('available'):
-                            new_version = update_available.get('new_version')
-                            gap_analysis = analyze_version_gap(plugin_version, new_version)
-                            update_msg = f"{gap_analysis['emoji']} {plugin_name} ({plugin_version} → {new_version}) - {gap_analysis['risk']}: {gap_analysis['message']}"
-                            plugin_slug_real = plugin.get('slug', '')
-                            stored_msg = f"{plugin_slug_real}||{update_msg}" if plugin_slug_real else update_msg
-                            updates_needed.append(stored_msg)
-                            updates_needed_raw.append({
-                                'message': update_msg,
-                                'priority': gap_analysis['priority'],
-                                'plugin': plugin_name,
-                                'current': plugin_version,
-                                'latest': new_version,
-                                'risk': gap_analysis['risk']
-                            })
-
-                    updates_needed_raw.sort(key=lambda x: x['priority'], reverse=True)
-
-                    builder = "Inconnu"
-                    builder_version = "N/A"
-                    if any('Divi' in p for p in plugins_dict.keys()):
-                        builder = "Divi"
-                        builder_version = next((v.split('(')[0].strip() for k, v in plugins_dict.items() if 'Divi' in k), 'N/A')
-                    elif any('Elementor' in p for p in plugins_dict.keys()):
-                        builder = "Elementor"
-                        builder_version = next((v.split('(')[0].strip() for k, v in plugins_dict.items() if 'Elementor' in k), 'N/A')
-                    elif any('Breakdance' in p for p in plugins_dict.keys()):
-                        builder = "Breakdance"
-                        builder_version = next((v.split('(')[0].strip() for k, v in plugins_dict.items() if 'Breakdance' in k), 'N/A')
-
-                    tech_info = {"builder": builder, "version": builder_version}
-                    updates_info = {
-                        "count_updates": len(updates_needed),
-                        "updates_needed": updates_needed,
-                        "updates_needed_raw": updates_needed_raw
-                    }
-
-                    print(f"   ✅ [AGENT] WP: {version_wp} | PHP: {version_php} | Builder: {builder} | Plugins: {len(plugins_dict)} | MAJ: {len(updates_needed)}")
+                    print(f"   ✅ [AGENT] WP: {version_wp} | PHP: {version_php} | Builder: {tech_info['builder']} | Plugins: {len(plugins_dict)} | MAJ: {updates_info['count_updates']}")
 
                 else:
                     methode_scan = "Scraping (Externe)"
