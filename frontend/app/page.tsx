@@ -8,6 +8,12 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 type IAStatus = "ALERTE" | "ATTENTION" | "OK" | "N/A" | "";
 
+type LicenseInfo = {
+  valid: boolean;
+  item?: string;
+  expires?: string;
+};
+
 type HealthResult = {
   url: string;
   client: string;
@@ -21,6 +27,7 @@ type HealthResult = {
   mises_a_jour?: string | null;
   wp_version?: string | null;
   php_version?: string | null;
+  licenses?: Record<string, LicenseInfo>;
 };
 
 type IAFilter = "TOUS" | "ALERTE" | "ATTENTION" | "OK";
@@ -624,6 +631,32 @@ export default function SanteDesSitesPage() {
                             {result.php_version}
                           </span>
                         </div>
+                        {result.licenses &&
+                          Object.entries(result.licenses).map(([key, lic]) => (
+                            <div key={key} className="flex items-center gap-1.5">
+                              <span
+                                className="font-medium capitalize"
+                                style={{ color: "rgba(23,25,28,0.75)" }}
+                              >
+                                {key}
+                              </span>
+                              <span
+                                style={{ color: lic.valid ? "#087A61" : "#dc2626" }}
+                              >
+                                {lic.valid ? "✓ Active" : "✗ Inactive"}
+                              </span>
+                              {lic.expires && (
+                                <span style={{ color: "rgba(23,25,28,0.5)" }}>
+                                  jusqu&apos;au{" "}
+                                  {lic.expires
+                                    .split(" ")[0]
+                                    .split("-")
+                                    .reverse()
+                                    .join("/")}
+                                </span>
+                              )}
+                            </div>
+                          ))}
                       </div>
                     </div>
 

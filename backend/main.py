@@ -110,6 +110,7 @@ class SiteResult(BaseModel):
     updates_count: Optional[int] = 0
     mises_a_jour: Optional[str] = "Aucune"
     methode: Optional[str] = "N/A"
+    licenses: Optional[dict] = None
 
 # ============================================================================
 # ROUTES API
@@ -191,7 +192,8 @@ async def get_results(request: Request, limit: int = 100):
                     builder_detecte as builder,
                     nb_updates as updates_count,
                     mises_a_jour as mises_a_jour,
-                    methode_scan as methode
+                    methode_scan as methode,
+                    licenses_json::json as licenses
                 FROM site_audits
                 WHERE statut_scan IS NOT NULL
                 ORDER BY project_id, created_at DESC
