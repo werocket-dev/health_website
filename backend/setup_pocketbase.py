@@ -141,10 +141,25 @@ def create_site_audits_collection(pb: PocketBase, projects_id: str):
     return pb.collections.create(body)
 
 
+def enable_batch_api(pb: PocketBase):
+    """
+    Désactivées par défaut (sécurité), les requêtes /api/batch sont
+    nécessaires à sync_site_plugins() (suppression + recréation groupées).
+    """
+    settings = pb.settings.get_all()
+    if settings.get("batch", {}).get("enabled"):
+        print("   ⏭️  API batch déjà activée.")
+        return
+    pb.settings.update({"batch": {"enabled": True, "maxRequests": 50, "timeout": 3, "maxBodySize": 0}})
+    print("   ✅ API batch activée")
+
+
 def main():
     print("🔧 Configuration des collections PocketBase...\n")
     pb = get_client()
     existing = existing_collection_names(pb)
+
+    enable_batch_api(pb)
 
     if "projects" in existing:
         print("   ⏭️  'projects' existe déjà, on la garde telle quelle.")
