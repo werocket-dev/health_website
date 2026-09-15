@@ -1,23 +1,17 @@
 import os
+import sys
 from urllib.parse import urlparse
 
 import pandas as pd
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
 
 # Chargement des clés depuis le .env du backend (un seul fichier partagé)
-BACKEND_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", "backend", ".env")
-load_dotenv(BACKEND_ENV_PATH)
+BACKEND_DIR = os.path.join(os.path.dirname(__file__), "..", "backend")
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
-
-def build_database_url() -> str:
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL manquant dans backend/.env")
-    if "sslmode=" not in database_url:
-        separator = "&" if "?" in database_url else "?"
-        database_url = f"{database_url}{separator}sslmode=require"
-    return database_url
+# Réutilise le client PocketBase du backend plutôt que d'en dupliquer un ici
+sys.path.insert(0, BACKEND_DIR)
+from services.pocketbase_client import upsert_project_from_notion  # noqa: E402
 
 
 def normalize_url(raw_url):
@@ -73,24 +67,17 @@ def load_and_clean(csv_path: str) -> pd.DataFrame:
 
 
 def import_projects(df: pd.DataFrame):
-    engine = create_engine(build_database_url(), pool_pre_ping=True)
-
-    upsert_sql = text("""
-        INSERT INTO projects (client_name, url, date_mise_en_ligne, notion_page_id)
-        VALUES (:client_name, :url, :date_mise_en_ligne, :notion_page_id)
-        ON CONFLICT (url) DO UPDATE SET
-            client_name = EXCLUDED.client_name,
-            date_mise_en_ligne = EXCLUDED.date_mise_en_ligne,
-            notion_page_id = COALESCE(EXCLUDED.notion_page_id, projects.notion_page_id)
-    """)
-
     rows = df.where(pd.notnull(df), None).to_dict(orient="records")
 
-    with engine.begin() as conn:
-        for row in rows:
-            conn.execute(upsert_sql, row)
+    for row in rows:
+        upsert_project_from_notion(
+            client_name=row["client_name"],
+            url=row["url"],
+            date_mise_en_ligne=row["date_mise_en_ligne"],
+            notion_page_id=row.get("notion_page_id") or "",
+        )
 
-    print(f"✅ SUCCÈS ! {len(rows)} projets insérés/mis à jour dans la table 'projects'.")
+    print(f"✅ SUCCÈS ! {len(rows)} projets insérés/mis à jour dans PocketBase (collection 'projects').")
 
 
 def init_database():
@@ -107,7 +94,7 @@ def init_database():
         print("❌ Aucun projet valide à importer.")
         return
 
-    print("🚀 Import dans Supabase (table 'projects')...")
+    print("🚀 Import dans PocketBase (collection 'projects')...")
     import_projects(df)
 
 

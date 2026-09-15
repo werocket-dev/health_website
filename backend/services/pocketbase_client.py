@@ -128,6 +128,10 @@ def upsert_project_from_notion(client_name: str, url: str, date_mise_en_ligne, n
     """
     Crée le projet s'il n'existe pas (par URL), sinon met à jour son nom et sa
     date — équivalent du ON CONFLICT(url) DO UPDATE de l'ancien import Postgres.
+
+    is_active n'est forcé à True qu'à la création : sur une mise à jour, on
+    ne touche pas ce champ pour ne pas réactiver silencieusement un site
+    désactivé manuellement à chaque resynchronisation Notion.
     """
     pb = get_client()
     existing = get_project_by_url(url)
@@ -136,13 +140,13 @@ def upsert_project_from_notion(client_name: str, url: str, date_mise_en_ligne, n
         "client_name": client_name,
         "url": url,
         "date_mise_en_ligne": date_mise_en_ligne.isoformat() if date_mise_en_ligne else None,
-        "is_active": True,
     }
     if notion_page_id:
         data["notion_page_id"] = notion_page_id
 
     if existing:
         return pb.collection("projects").update(existing.id, data)
+    data["is_active"] = True
     return pb.collection("projects").create({"id": _generate_record_id(), **data})
 
 
