@@ -1,6 +1,5 @@
 import os
 import json
-import time
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
@@ -8,10 +7,15 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
-from audit_engine import run_audit, update_plugin_via_agent, update_core_via_agent, refresh_site_in_results, RESULTS_FILE
+from audit_engine import (
+    run_audit,
+    update_plugin_via_agent,
+    update_core_via_agent,
+    refresh_site_in_results,
+    call_pb_worker,
+    RESULTS_FILE,
+)
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -48,21 +52,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-def build_database_url() -> str:
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL manquant. Configure une URL Supabase avec sslmode=require.")
-    if "sslmode=" not in database_url:
-        separator = "&" if "?" in database_url else "?"
-        database_url = f"{database_url}{separator}sslmode=require"
-    if "connect_timeout=" not in database_url:
-        separator = "&" if "?" in database_url else "?"
-        database_url = f"{database_url}{separator}connect_timeout=5"
-    return database_url
-
-# Connexion PostgreSQL (Supabase)
-engine = create_engine(build_database_url(), pool_pre_ping=True, pool_recycle=300)
 
 # ============================================================================
 # MODÈLES PYDANTIC (Ce que le Front envoie/reçoit)
@@ -117,19 +106,19 @@ class SiteResult(BaseModel):
 # ============================================================================
 
 @app.on_event("startup")
-def migrate():
+def check_pocketbase():
+    import time
     max_attempts = 15
     delay_seconds = 2
 
     for attempt in range(1, max_attempts + 1):
         try:
-            with engine.begin() as conn:
-                conn.execute(text("SELECT 1"))
+            call_pb_worker("ping")
             return
-        except OperationalError:
+        except Exception:
             if attempt == max_attempts:
                 raise
-            print(f"⏳ Base non prête (tentative {attempt}/{max_attempts}), nouvelle tentative dans {delay_seconds}s...")
+            print(f"⏳ PocketBase non prêt (tentative {attempt}/{max_attempts}), nouvelle tentative dans {delay_seconds}s...")
             time.sleep(delay_seconds)
 
 @app.get("/")
@@ -173,36 +162,12 @@ async def get_results(request: Request, limit: int = 100):
         except Exception as e:
             print(f"⚠️  Erreur lecture results.json: {e}")
 
-    # Fallback : DB
+    # Fallback : PocketBase (chaque projet porte déjà son dernier état, pas
+    # besoin de dédoublonnage comme avec l'ancien historique site_audits)
     try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT DISTINCT ON (project_id)
-                    project_name as client,
-                    site_url as url,
-                    diagnostic_ia as ia_status,
-                    score_ia as ia_score,
-                    diagnostic_ia_contact as ia_status_contact,
-                    score_ia_contact as ia_score_contact,
-                    diagnostic_ia_mobile as ia_status_mobile,
-                    score_ia_mobile as ia_score_mobile,
-                    version_wp as wp_version,
-                    version_php as php_version,
-                    theme_actif as theme,
-                    builder_detecte as builder,
-                    nb_updates as updates_count,
-                    mises_a_jour as mises_a_jour,
-                    methode_scan as methode,
-                    licenses_json::json as licenses
-                FROM site_audits
-                WHERE statut_scan IS NOT NULL
-                ORDER BY project_id, created_at DESC
-                LIMIT :limit
-            """)
-            results = conn.execute(query, {"limit": limit}).mappings().all()
-            return results
+        return call_pb_worker("get_results_summary", {"limit": limit})
     except Exception as e:
-        print(f"❌ Erreur SQL : {e}")
+        print(f"❌ Erreur PocketBase : {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/update-plugin", response_model=PluginUpdateResponse)
@@ -245,42 +210,7 @@ async def get_stats():
     Statistiques globales pour les Widgets du Dashboard
     """
     try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT
-                    COUNT(*) as total_sites,
-                    COUNT(CASE WHEN diagnostic_ia = 'OK' THEN 1 END) as ia_ok,
-                    COUNT(CASE WHEN diagnostic_ia = 'ATTENTION' THEN 1 END) as ia_attention,
-                    COUNT(CASE WHEN diagnostic_ia = 'ALERTE' THEN 1 END) as ia_alerte,
-                    SUM(nb_updates) as total_updates,
-                    COUNT(CASE WHEN methode_scan = 'Agent' THEN 1 END) as scans_agent
-                FROM (
-                    SELECT DISTINCT ON (project_id)
-                        diagnostic_ia,
-                        nb_updates,
-                        methode_scan
-                    FROM site_audits
-                    WHERE statut_scan IS NOT NULL
-                    ORDER BY project_id, created_at DESC
-                ) latest
-            """)
-            
-            stats = conn.execute(query).mappings().first()
-            
-            # Gestion des valeurs nulles si la base est vide
-            return {
-                "total_sites": stats["total_sites"] or 0,
-                "ia_status": {
-                    "ok": stats["ia_ok"] or 0,
-                    "attention": stats["ia_attention"] or 0,
-                    "alerte": stats["ia_alerte"] or 0
-                },
-                "kpis": {
-                    "updates_pending": stats["total_updates"] or 0,
-                    "agent_coverage": stats["scans_agent"] or 0
-                }
-            }
-            
+        return call_pb_worker("get_stats_summary")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

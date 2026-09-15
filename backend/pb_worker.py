@@ -24,8 +24,15 @@ def main():
     command = sys.argv[1]
     args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
 
-    if command == "get_active_projects":
+    if command == "ping":
+        pbc.get_client()
+        result = {"success": True}
+    elif command == "get_active_projects":
         result = pbc.get_active_projects()
+    elif command == "get_results_summary":
+        result = pbc.get_results_summary(args.get("limit", 100))
+    elif command == "get_stats_summary":
+        result = pbc.get_stats_summary()
     elif command == "update_project_status":
         pbc.update_project_status(args["project_id"], args["latest"])
         result = {"success": True}

@@ -432,6 +432,7 @@ async def run_audit(sites_list=None, progress_callback=None):
                     "project_id": project_id,
                     "latest": {
                         **pb_payload,
+                        "mises_a_jour": updates_list,
                         "audited_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     },
                 })

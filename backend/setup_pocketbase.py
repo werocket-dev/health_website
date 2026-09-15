@@ -58,6 +58,7 @@ def create_projects_collection(pb: PocketBase):
             {"name": "latest_builder", "type": "text"},
             {"name": "latest_builder_version", "type": "text"},
             {"name": "latest_updates_count", "type": "number"},
+            {"name": "latest_mises_a_jour", "type": "text"},
             {"name": "latest_licenses", "type": "json"},
 
             # État précédent — uniquement pour le diff du rapport nocturne
@@ -141,6 +142,29 @@ def create_site_audits_collection(pb: PocketBase, projects_id: str):
     return pb.collections.create(body)
 
 
+def ensure_fields(pb: PocketBase, collection_name: str, field_defs: list[dict]):
+    """
+    Ajoute les champs manquants à une collection existante, sans toucher à
+    ceux déjà présents (l'API PocketBase remplace la liste "fields" en
+    entier, donc on renvoie les champs actuels + les nouveaux).
+
+    ⚠️ Les champs système (id, created, updated...) sont exclus du renvoi :
+    les repasser tels quels dans un update a déjà effacé silencieusement le
+    auto_generate_pattern du champ "id" d'une collection (irréversible via
+    l'API ensuite) — PocketBase gère ces champs lui-même, inutile de les
+    lui repasser.
+    """
+    collection = next(c for c in pb.collections.get_full_list() if c.name == collection_name)
+    existing_names = {f["name"] for f in collection.fields}
+    missing = [f for f in field_defs if f["name"] not in existing_names]
+    if not missing:
+        print(f"   ⏭️  '{collection_name}' : aucun champ à ajouter.")
+        return
+    user_fields = [f for f in collection.fields if not f.get("system")]
+    pb.collections.update(collection.id, {"fields": user_fields + missing})
+    print(f"   ✅ '{collection_name}' : champ(s) ajouté(s) — {', '.join(f['name'] for f in missing)}")
+
+
 def enable_batch_api(pb: PocketBase):
     """
     Désactivées par défaut (sécurité), les requêtes /api/batch sont
@@ -162,9 +186,10 @@ def main():
     enable_batch_api(pb)
 
     if "projects" in existing:
-        print("   ⏭️  'projects' existe déjà, on la garde telle quelle.")
+        print("   ⏭️  'projects' existe déjà.")
         projects = next(c for c in pb.collections.get_full_list() if c.name == "projects")
         projects_id = projects.id
+        ensure_fields(pb, "projects", [{"name": "latest_mises_a_jour", "type": "text"}])
     else:
         projects = create_projects_collection(pb)
         projects_id = projects.id

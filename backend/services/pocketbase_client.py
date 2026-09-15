@@ -1,8 +1,24 @@
 import os
+import random
+import string
 from dotenv import load_dotenv
 from pocketbase import PocketBase
 
 load_dotenv()
+
+
+def _generate_record_id() -> str:
+    """
+    Génère un id conforme au format PocketBase ([a-z0-9]{15}).
+
+    ⚠️ Nécessaire pour la collection 'projects' : une modification de
+    schéma (ajout de latest_mises_a_jour via ensure_fields) a réinitialisé
+    par effet de bord le auto_generate_pattern du champ système "id" côté
+    serveur (confirmé irréversible via l'API — PocketBase refuse de le
+    réécrire une fois vidé). On génère donc l'id nous-mêmes à la création
+    plutôt que de compter sur l'auto-génération serveur.
+    """
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=15))
 
 POCKETBASE_PUBLIC_URL = os.getenv("POCKETBASE_PUBLIC_URL", "").strip().rstrip("/")
 POCKETBASE_ADMIN_EMAIL = os.getenv("POCKETBASE_ADMIN_EMAIL")
@@ -29,6 +45,58 @@ def get_client() -> PocketBase:
     pb.collection("_superusers").auth_with_password(POCKETBASE_ADMIN_EMAIL, POCKETBASE_ADMIN_PASSWORD)
     _pb = pb
     return _pb
+
+
+def _project_to_result(r) -> dict:
+    """Formate un record `projects` au format attendu par le dashboard (SiteResult)."""
+    return {
+        "client": r.client_name,
+        "url": r.url,
+        "ia_status": r.latest_ia_status or "N/A",
+        "ia_score": r.latest_ia_score or 0,
+        "ia_status_contact": r.latest_ia_status_contact or "N/A",
+        "ia_score_contact": r.latest_ia_score_contact or 0,
+        "ia_status_mobile": r.latest_ia_status_mobile or "N/A",
+        "ia_score_mobile": r.latest_ia_score_mobile or 0,
+        "wp_version": r.latest_wp_version or "N/A",
+        "php_version": r.latest_php_version or "N/A",
+        "theme": r.latest_theme or "N/A",
+        "builder": r.latest_builder or "N/A",
+        "updates_count": r.latest_updates_count or 0,
+        "mises_a_jour": r.latest_mises_a_jour or "Aucune",
+        "methode": r.latest_methode_scan or "N/A",
+        "licenses": r.latest_licenses or {},
+    }
+
+
+def get_results_summary(limit: int = 100) -> list[dict]:
+    """
+    Équivalent du SELECT DISTINCT ON (project_id) ... FROM site_audits — sauf
+    qu'ici chaque projet EST déjà son propre dernier état (latest_*), donc
+    une simple lecture triée suffit, sans dédoublonnage.
+    """
+    pb = get_client()
+    page = pb.collection("projects").get_list(1, limit, {"sort": "-last_audit_at"})
+    return [_project_to_result(r) for r in page.items]
+
+
+def get_stats_summary() -> dict:
+    """Statistiques globales pour les widgets du dashboard."""
+    pb = get_client()
+    projects = pb.collection("projects").get_full_list()
+
+    total_sites = len(projects)
+    ia_ok = sum(1 for p in projects if p.latest_ia_status == "OK")
+    ia_attention = sum(1 for p in projects if p.latest_ia_status == "ATTENTION")
+    ia_alerte = sum(1 for p in projects if p.latest_ia_status == "ALERTE")
+    total_updates = sum(p.latest_updates_count or 0 for p in projects)
+    scans_agent = sum(1 for p in projects if p.latest_methode_scan == "Agent")
+
+    return {
+        "total_sites": total_sites,
+        "ia_status": {"ok": ia_ok, "attention": ia_attention, "alerte": ia_alerte},
+        "kpis": {"updates_pending": total_updates, "agent_coverage": scans_agent},
+    }
 
 
 def get_active_projects() -> list[dict]:
@@ -75,7 +143,7 @@ def upsert_project_from_notion(client_name: str, url: str, date_mise_en_ligne, n
 
     if existing:
         return pb.collection("projects").update(existing.id, data)
-    return pb.collection("projects").create(data)
+    return pb.collection("projects").create({"id": _generate_record_id(), **data})
 
 
 def update_project_status(project_id: str, latest: dict) -> dict:
@@ -113,6 +181,7 @@ def update_project_status(project_id: str, latest: dict) -> dict:
         "latest_builder": latest["builder"],
         "latest_builder_version": latest["builder_version"],
         "latest_updates_count": latest["updates_count"],
+        "latest_mises_a_jour": latest.get("mises_a_jour", ""),
         "latest_licenses": latest["licenses"],
         "last_audit_at": latest.get("audited_at"),
     }
