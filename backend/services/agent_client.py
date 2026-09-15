@@ -5,8 +5,8 @@ import requests
 from nacl.signing import SigningKey
 from dotenv import load_dotenv
 
-from config import RESULTS_FILE
-from plugin_updates import analyze_version_gap
+from .config import RESULTS_FILE
+from .plugin_updates import analyze_version_gap
 
 # --- INITIALISATION ---
 load_dotenv()

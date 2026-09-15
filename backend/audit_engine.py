@@ -8,16 +8,16 @@ from sqlalchemy import create_engine, text
 import json
 from dotenv import load_dotenv
 
-from config import RESULTS_FILE
-from agent_client import (
+from services.config import RESULTS_FILE
+from services.agent_client import (
     connect_to_agent,
     update_plugin_via_agent,
     update_core_via_agent,
     parse_agent_data,
     refresh_site_in_results,
 )
-from scraper import scan_tech, scan_plugins_versions
-from plugin_updates import check_updates_api
+from services.scraper import scan_tech, scan_plugins_versions
+from services.plugin_updates import check_updates_api
 
 # --- INITIALISATION ---
 load_dotenv()
