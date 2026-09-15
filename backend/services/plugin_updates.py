@@ -246,3 +246,36 @@ def check_updates_api(detected_versions):
         "count_verified": verified_plugins,
         "count_total": total_plugins
     }
+
+
+def build_plugins_payload(plugins_dict, updates_info):
+    """
+    Convertit plugins_dict ({"Nom": "1.6.7 (Actif)"} côté Agent, ou
+    {"Nom": "Détecté"} côté scraping) + updates_info en une liste prête pour
+    site_plugins (PocketBase) : un dict par plugin avec slug/version/statut/
+    MAJ dispo/niveau de risque.
+    """
+    updates_by_plugin = {u['plugin']: u for u in updates_info.get('updates_needed_raw', [])}
+    payload = []
+
+    for name, raw_value in plugins_dict.items():
+        update = updates_by_plugin.get(name)
+
+        if '(' in raw_value and raw_value.endswith(')'):
+            version, status = raw_value.rsplit(' (', 1)
+            is_active = status.rstrip(')') == 'Actif'
+        else:
+            version = raw_value
+            is_active = True
+
+        payload.append({
+            'plugin_slug': get_plugin_slug(name),
+            'plugin_name': name,
+            'version': version,
+            'is_active': is_active,
+            'update_available': update is not None,
+            'latest_available_version': update['latest'] if update else '',
+            'risk_level': update['risk'] if update else 'Aucun',
+        })
+
+    return payload

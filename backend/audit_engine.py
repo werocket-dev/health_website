@@ -3,8 +3,8 @@ import sys
 import asyncio
 import random
 import sentry_sdk
+from datetime import datetime, timezone
 from playwright.async_api import async_playwright
-from sqlalchemy import create_engine, text
 import json
 from dotenv import load_dotenv
 
@@ -17,25 +17,10 @@ from services.agent_client import (
     refresh_site_in_results,
 )
 from services.scraper import scan_tech, scan_plugins_versions
-from services.plugin_updates import check_updates_api
+from services.plugin_updates import check_updates_api, build_plugins_payload
 
 # --- INITIALISATION ---
 load_dotenv()
-
-def build_database_url() -> str:
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL manquant. Configure une URL Supabase avec sslmode=require.")
-    if "sslmode=" not in database_url:
-        separator = "&" if "?" in database_url else "?"
-        database_url = f"{database_url}{separator}sslmode=require"
-    if "connect_timeout=" not in database_url:
-        separator = "&" if "?" in database_url else "?"
-        database_url = f"{database_url}{separator}connect_timeout=5"
-    return database_url
-
-# Connexion BDD (Supabase)
-engine = create_engine(build_database_url(), pool_pre_ping=True, pool_recycle=300)
 
 # Dossier pour les preuves visuelles
 SCREENSHOT_DIR = "screenshots_audit"
@@ -43,6 +28,35 @@ os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 _TF_INFER_SCRIPT = os.path.join(os.path.dirname(__file__), "tf_infer.py")
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "werocket_vision_model.h5")
+_PB_WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "pb_worker.py")
+
+def call_pb_worker(command: str, args: dict | None = None):
+    """
+    Exécute une opération PocketBase dans un sous-processus isolé — le
+    client PocketBase (httpx) authentifié dans ce process casse le
+    lancement du driver Playwright sur macOS (même famille de conflit que
+    celui déjà contourné pour TensorFlow, cf. predict_visual()).
+    """
+    import subprocess
+    import time as time_module
+    cmd = [sys.executable, _PB_WORKER_SCRIPT, command]
+    if args is not None:
+        cmd.append(json.dumps(args, ensure_ascii=False))
+
+    # L'instance PocketBase a montré des timeouts réseau ponctuels en test —
+    # un seul essai suffit à les absorber sans bloquer tout l'audit.
+    last_error = None
+    for attempt in range(2):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout.strip())
+            if isinstance(data, dict) and "error" in data:
+                raise RuntimeError(f"pb_worker '{command}' : {data['error']}")
+            return data
+        last_error = result.stderr.strip()[:300]
+        if attempt == 0:
+            time_module.sleep(2)
+    raise RuntimeError(f"pb_worker '{command}' a échoué : {last_error}")
 
 def predict_visual(img_path):
     """Inférence TF dans un subprocess isolé — évite le conflit mutex avec Playwright sur macOS ARM."""
@@ -88,10 +102,8 @@ async def run_audit(sites_list=None, progress_callback=None):
     """
     # 1. Récupération des sites à auditer
     if sites_list is None:
-        # Mode par défaut : liste statique des sites clients
-        sites = [
-            {"Client": "Evasion Immo", "URL": "https://www.evasion2alpesimmo.fr/"},
-        ]
+        # Mode par défaut : tous les sites actifs depuis PocketBase
+        sites = call_pb_worker("get_active_projects")
     else:
         # Mode API : utilise la liste fournie en paramètre
         sites = sites_list
@@ -372,7 +384,6 @@ async def run_audit(sites_list=None, progress_callback=None):
         wp_detecte = entry["wp_detecte"]
         licenses_info = entry.get("licenses", {})
 
-        plugins_list = ", ".join([f"{k} ({v})" for k, v in plugins_dict.items()]) or "Aucun détecté"
         updates_list = ", ".join(updates_info.get("updates_needed", [])) or "Aucune"
 
         # Accumulation résultats JSON (indépendant de la DB)
@@ -395,54 +406,43 @@ async def run_audit(sites_list=None, progress_callback=None):
             "licenses": licenses_info,
         })
 
-        try:
-            with engine.begin() as conn:
-                insert_sql = text("""
-                    INSERT INTO site_audits (
-                        project_id, project_name, site_url, statut_scan, methode_scan,
-                        diagnostic_ia, score_ia, builder_detecte, version_builder,
-                        version_wp, version_php, version_mysql, theme_actif, version_theme,
-                        plugins_detectes, mises_a_jour, nb_updates,
-                        diagnostic_ia_contact, score_ia_contact,
-                        diagnostic_ia_mobile, score_ia_mobile,
-                        licenses_json
-                    ) VALUES (
-                        :project_id, :project_name, :site_url, :statut, :methode,
-                        :ia, :score, :build, :ver_build,
-                        :ver_wp, :ver_php, :ver_mysql, :theme_name, :theme_ver,
-                        :plugins, :updates, :nb_updates,
-                        :ia_contact, :score_contact,
-                        :ia_mobile, :score_mobile,
-                        :licenses
-                    )
-                """)
-                conn.execute(insert_sql, {
+        if not project_id:
+            print(f"   ⚠️  Pas de project_id pour {project_name} — écriture PocketBase ignorée (results.json reste à jour)")
+        else:
+            try:
+                pb_payload = {
+                    "methode_scan": methode_scan,
+                    "ia_status": diag_ia["status"],
+                    "ia_score": diag_ia["score"],
+                    "ia_status_contact": diag_ia_contact["status"],
+                    "ia_score_contact": diag_ia_contact["score"],
+                    "ia_status_mobile": diag_ia_mobile["status"],
+                    "ia_score_mobile": diag_ia_mobile["score"],
+                    "wp_version": version_wp,
+                    "php_version": version_php,
+                    "mysql_version": version_mysql,
+                    "theme": theme_name,
+                    "theme_version": theme_version,
+                    "builder": tech_info["builder"],
+                    "builder_version": tech_info["version"],
+                    "updates_count": updates_info["count_updates"],
+                    "licenses": licenses_info,
+                }
+                call_pb_worker("update_project_status", {
                     "project_id": project_id,
-                    "project_name": project_name,
-                    "site_url": url,
-                    "statut": "Scanned",
-                    "methode": methode_scan,
-                    "ia": diag_ia["status"],
-                    "score": diag_ia["score"],
-                    "ia_contact": diag_ia_contact["status"],
-                    "score_contact": diag_ia_contact["score"],
-                    "ia_mobile": diag_ia_mobile["status"],
-                    "score_mobile": diag_ia_mobile["score"],
-                    "licenses": json.dumps(licenses_info),
-                    "build": tech_info["builder"],
-                    "ver_build": tech_info["version"],
-                    "ver_wp": version_wp,
-                    "ver_php": version_php,
-                    "ver_mysql": version_mysql,
-                    "theme_name": theme_name,
-                    "theme_ver": theme_version,
-                    "plugins": plugins_list,
-                    "updates": updates_list,
-                    "nb_updates": updates_info["count_updates"],
+                    "latest": {
+                        **pb_payload,
+                        "audited_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    },
                 })
-        except Exception as db_err:
-            print(f"   ⚠️  DB insert ignoré ({project_name}): {db_err}")
-            sentry_sdk.capture_exception(db_err)
+                call_pb_worker("create_site_audit", {"project_id": project_id, "entry": pb_payload})
+                call_pb_worker("sync_site_plugins", {
+                    "project_id": project_id,
+                    "plugins": build_plugins_payload(plugins_dict, updates_info),
+                })
+            except Exception as db_err:
+                print(f"   ⚠️  Écriture PocketBase ignorée ({project_name}): {db_err}")
+                sentry_sdk.capture_exception(db_err)
 
         # Mise à jour des statistiques
         stats["success"] += 1
