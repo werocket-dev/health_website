@@ -150,6 +150,20 @@ def upsert_project_from_notion(client_name: str, url: str, date_mise_en_ligne, n
     return pb.collection("projects").create({"id": _generate_record_id(), **data})
 
 
+def get_random_active_projects(limit: int = 350) -> list[dict]:
+    """
+    Échantillon aléatoire de sites actifs — utilisé par le script de
+    génération du dataset d'entraînement (3_generate_dataset.py).
+    PocketBase ne supporte pas un ORDER BY RANDOM() natif, donc on tire
+    l'échantillon côté Python après avoir récupéré la liste complète.
+    """
+    import random
+    pb = get_client()
+    records = pb.collection("projects").get_full_list(query_params={"filter": "is_active = true"})
+    sample = random.sample(records, min(limit, len(records)))
+    return [{"client_name": r.client_name, "url": r.url} for r in sample]
+
+
 def update_project_status(project_id: str, latest: dict) -> dict:
     """
     Met à jour l'état courant d'un projet après un audit. Décale d'abord

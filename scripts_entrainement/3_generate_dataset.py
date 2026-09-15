@@ -1,13 +1,28 @@
 import os
+import sys
+import json
 import asyncio
+import subprocess
 from playwright.async_api import async_playwright
-from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 from urllib.parse import urlparse, urljoin
 
-ENV_PATH = os.path.join(os.path.dirname(__file__), "..", "backend", ".env")
-load_dotenv(ENV_PATH)
-engine = create_engine(os.getenv('DATABASE_URL'))
+BACKEND_DIR = os.path.join(os.path.dirname(__file__), "..", "backend")
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
+
+_PB_WORKER_SCRIPT = os.path.join(BACKEND_DIR, "pb_worker.py")
+
+def get_random_active_projects(limit: int = 350) -> list[dict]:
+    """
+    Sous-processus isolé — comme dans audit_engine.py : authentifier le
+    client PocketBase dans le même process que Playwright casse le
+    lancement du driver Playwright sur macOS.
+    """
+    cmd = [sys.executable, _PB_WORKER_SCRIPT, "get_random_active_projects", json.dumps({"limit": limit})]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"pb_worker a échoué : {result.stderr.strip()[:300]}")
+    return json.loads(result.stdout.strip())
 
 DIRS = {"healthy": "dataset/healthy", "broken": "dataset/broken"}
 for d in DIRS.values(): os.makedirs(d, exist_ok=True)
@@ -50,9 +65,7 @@ async def capture_page(page, url, name_prefix):
     await page.screenshot(path=f"{DIRS['broken']}/{name_prefix}.png")
 
 async def sabotaging_bot():
-    with engine.connect() as conn:
-        query = text("SELECT * FROM projects WHERE is_active = true ORDER BY RANDOM() LIMIT 350")
-        sites = conn.execute(query).mappings().all()
+    sites = get_random_active_projects(350)
 
     print(f"🧪 Génération du Dataset sur {len(sites)} sites...")
 

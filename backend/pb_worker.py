@@ -29,6 +29,8 @@ def main():
         result = {"success": True}
     elif command == "get_active_projects":
         result = pbc.get_active_projects()
+    elif command == "get_random_active_projects":
+        result = pbc.get_random_active_projects(args.get("limit", 350))
     elif command == "get_results_summary":
         result = pbc.get_results_summary(args.get("limit", 100))
     elif command == "get_stats_summary":
