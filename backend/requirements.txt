@@ -2,10 +2,8 @@
 # Python 3.12+
 
 # ============================================
-# CORE - Base de données et environnement
+# CORE - Environnement
 # ============================================
-sqlalchemy==2.0.46
-psycopg2-binary==2.9.11
 python-dotenv==1.2.1
 pandas==3.0.0
 
