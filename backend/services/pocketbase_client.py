@@ -69,15 +69,28 @@ def _project_to_result(r) -> dict:
     }
 
 
-def get_results_summary(limit: int = 100) -> list[dict]:
+def get_results_summary(page: int = 1, per_page: int = 25, search: str = "") -> dict:
     """
-    Équivalent du SELECT DISTINCT ON (project_id) ... FROM site_audits — sauf
-    qu'ici chaque projet EST déjà son propre dernier état (latest_*), donc
-    une simple lecture triée suffit, sans dédoublonnage.
+    Équivalent paginé du SELECT DISTINCT ON (project_id) ... FROM site_audits
+    — sauf qu'ici chaque projet EST déjà son propre dernier état (latest_*),
+    donc une simple lecture triée/paginée suffit, sans dédoublonnage.
+    `search` filtre sur le nom du client ou l'URL (recherche PocketBase
+    native, pas de scan côté Python).
     """
     pb = get_client()
-    page = pb.collection("projects").get_list(1, limit, {"sort": "-last_audit_at"})
-    return [_project_to_result(r) for r in page.items]
+    query_params = {"sort": "-last_audit_at"}
+    if search:
+        query_params["filter"] = pb.filter(
+            'client_name ~ {:q} || url ~ {:q}', {"q": search}
+        )
+    result = pb.collection("projects").get_list(page, per_page, query_params)
+    return {
+        "items": [_project_to_result(r) for r in result.items],
+        "total": result.total_items,
+        "page": result.page,
+        "per_page": result.per_page,
+        "total_pages": result.total_pages,
+    }
 
 
 def get_stats_summary() -> dict:

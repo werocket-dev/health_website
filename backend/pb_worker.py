@@ -32,7 +32,9 @@ def main():
     elif command == "get_random_active_projects":
         result = pbc.get_random_active_projects(args.get("limit", 350))
     elif command == "get_results_summary":
-        result = pbc.get_results_summary(args.get("limit", 100))
+        result = pbc.get_results_summary(
+            args.get("page", 1), args.get("per_page", 25), args.get("search", "")
+        )
     elif command == "get_stats_summary":
         result = pbc.get_stats_summary()
     elif command == "update_project_status":

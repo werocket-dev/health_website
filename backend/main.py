@@ -102,6 +102,13 @@ class SiteResult(BaseModel):
     methode: Optional[str] = "N/A"
     licenses: Optional[dict] = None
 
+class PaginatedResults(BaseModel):
+    items: List[SiteResult]
+    total: int
+    page: int
+    per_page: int
+    total_pages: int
+
 # ============================================================================
 # ROUTES API
 # ============================================================================
@@ -152,9 +159,9 @@ async def launch_scan(
         url=scan_request.url if scan_request and scan_request.url else ("BDD" + (f" (limité à {limit})" if limit else ""))
     )
 
-@app.get("/api/results", response_model=List[SiteResult])
-async def get_results(request: Request, limit: int = 100):
-    print(f"[audit] /api/results from {request.client.host} origin={request.headers.get('origin')}")
+@app.get("/api/results", response_model=PaginatedResults)
+async def get_results(request: Request, page: int = 1, per_page: int = 25, search: str = ""):
+    print(f"[audit] /api/results from {request.client.host} origin={request.headers.get('origin')} page={page} search={search!r}")
 
     # Priorité : fichier JSON local (indépendant de la DB)
     if os.path.exists(RESULTS_FILE):
@@ -166,14 +173,29 @@ async def get_results(request: Request, limit: int = 100):
             for entry in data:
                 if not isinstance(entry.get("licenses"), dict):
                     entry["licenses"] = {}
-            return data[:limit]
+
+            if search:
+                needle = search.strip().lower()
+                data = [
+                    d for d in data
+                    if needle in (d.get("client") or "").lower() or needle in (d.get("url") or "").lower()
+                ]
+
+            total = len(data)
+            total_pages = max(1, -(-total // per_page))  # ceil division
+            start = (page - 1) * per_page
+            items = data[start:start + per_page]
+
+            return PaginatedResults(
+                items=items, total=total, page=page, per_page=per_page, total_pages=total_pages
+            )
         except Exception as e:
             print(f"⚠️  Erreur lecture results.json: {e}")
 
-    # Fallback : PocketBase (chaque projet porte déjà son dernier état, pas
-    # besoin de dédoublonnage comme avec l'ancien historique site_audits)
+    # Fallback : PocketBase (pagination + recherche natives, chaque projet
+    # porte déjà son dernier état — pas besoin de dédoublonnage)
     try:
-        return call_pb_worker("get_results_summary", {"limit": limit})
+        return call_pb_worker("get_results_summary", {"page": page, "per_page": per_page, "search": search})
     except Exception as e:
         print(f"❌ Erreur PocketBase : {e}")
         raise HTTPException(status_code=500, detail=str(e))

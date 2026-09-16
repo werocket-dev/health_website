@@ -87,6 +87,8 @@ function pluginBadgeColor(plugin: string): string {
   return "border-l-emerald-400 bg-emerald-50";
 }
 
+const PER_PAGE = 25;
+
 export default function SanteDesSitesPage() {
   const [results, setResults] = useState<HealthResult[]>([]);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
@@ -96,6 +98,20 @@ export default function SanteDesSitesPage() {
   const [apiUnavailable, setApiUnavailable] = useState<boolean>(false);
   const [updatingPlugins, setUpdatingPlugins] = useState<Record<string, "loading" | "success" | "error">>({});
   const [auditProgress, setAuditProgress] = useState<{ status: string; percent: number; label: string } | null>(null);
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalResults, setTotalResults] = useState(0);
+
+  // Debounce : on n'interroge l'API que 400ms après la dernière frappe
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   useEffect(() => {
     fetch("https://api.wordpress.org/core/version-check/1.7/")
@@ -106,8 +122,13 @@ export default function SanteDesSitesPage() {
 
   const fetchResults = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/results`);
-      const incoming = Array.isArray(response.data) ? (response.data as HealthResult[]) : [];
+      const response = await axios.get(`${API_URL}/api/results`, {
+        params: { page, per_page: PER_PAGE, search },
+      });
+      const incoming: HealthResult[] = Array.isArray(response.data?.items) ? response.data.items : [];
+      setTotalPages(response.data?.total_pages ?? 1);
+      setTotalResults(response.data?.total ?? incoming.length);
+
       const statusRank = (s: IAStatus) => s === "ALERTE" ? 0 : s === "ATTENTION" ? 1 : s === "OK" ? 2 : 3;
       const sorted = [...incoming].sort((a, b) => {
         const rankA = statusRank(a.ia_status), rankB = statusRank(b.ia_status);
@@ -136,7 +157,7 @@ export default function SanteDesSitesPage() {
     const interval = setInterval(fetchResults, 5000);
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [page, search]);
 
   // Polling progression audit
   useEffect(() => {
@@ -376,6 +397,27 @@ export default function SanteDesSitesPage() {
               </div>
             </div>
           )}
+
+          <div
+            className="rounded-2xl border px-6 py-4"
+            style={{
+              borderColor: "rgba(23,25,28,0.08)",
+              background: "rgba(255,255,255,0.9)",
+            }}
+          >
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Rechercher un client ou une URL..."
+              className="w-full max-w-sm px-4 py-2 rounded-xl text-sm outline-none border"
+              style={{
+                borderColor: "rgba(23,25,28,0.12)",
+                background: "rgba(23,25,28,0.02)",
+                color: "var(--color-ink)",
+              }}
+            />
+          </div>
 
           {results.length > 0 && (
             <div
@@ -719,6 +761,32 @@ export default function SanteDesSitesPage() {
               })
             )}
           </div>
+
+          {totalResults > 0 && (
+            <div className="flex items-center justify-between gap-4 px-2 text-sm">
+              <span style={{ color: "rgba(23,25,28,0.55)" }}>
+                {totalResults} site{totalResults > 1 ? "s" : ""} — page {page} / {totalPages}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)" }}
+                >
+                  ← Précédent
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)" }}
+                >
+                  Suivant →
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
