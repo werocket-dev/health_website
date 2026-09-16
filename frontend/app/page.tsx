@@ -1,7 +1,7 @@
 "use client";
 
 import axios from "axios";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
@@ -103,6 +103,15 @@ export default function SanteDesSitesPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalResults, setTotalResults] = useState(0);
+  const [stats, setStats] = useState<{
+    ia_status: { ok: number; attention: number; alerte: number };
+    maj_status: { toutes: number; avec_maj: number; critiques: number; a_jour: number };
+    total_sites: number;
+  } | null>(null);
+
+  const iaStatusParam = (f: IAFilter) => (f === "TOUS" ? "" : f);
+  const majParam = (f: MAJFilter) =>
+    f === "TOUTES" ? "" : f === "AVEC_MAJ" ? "avec_maj" : f === "CRITIQUES" ? "critiques" : "a_jour";
 
   // Debounce : on n'interroge l'API que 400ms après la dernière frappe
   useEffect(() => {
@@ -120,10 +129,25 @@ export default function SanteDesSitesPage() {
       .catch(() => {});
   }, []);
 
+  const fetchStats = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/stats`);
+      setStats(response.data);
+    } catch (error) {
+      console.error("[audit] Erreur fetch stats:", error);
+    }
+  };
+
   const fetchResults = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/results`, {
-        params: { page, per_page: PER_PAGE, search },
+        params: {
+          page,
+          per_page: PER_PAGE,
+          search,
+          ia_status: iaStatusParam(filterIA),
+          maj: majParam(filterMAJ),
+        },
       });
       const incoming: HealthResult[] = Array.isArray(response.data?.items) ? response.data.items : [];
       setTotalPages(response.data?.total_pages ?? 1);
@@ -157,7 +181,15 @@ export default function SanteDesSitesPage() {
     const interval = setInterval(fetchResults, 5000);
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search]);
+  }, [page, search, filterIA, filterMAJ]);
+
+  useEffect(() => {
+    if (!API_URL) return;
+    fetchStats();
+    const interval = setInterval(fetchStats, 5000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Polling progression audit
   useEffect(() => {
@@ -214,37 +246,17 @@ export default function SanteDesSitesPage() {
     }
   };
 
-  const afterIAFilter = useMemo(() => {
-    if (filterIA === "TOUS") return results;
-    return results.filter((r) => r.ia_status === filterIA);
-  }, [filterIA, results]);
-
-  const filteredResults = useMemo(() => {
-    return afterIAFilter.filter((r) => {
-      if (filterMAJ === "TOUTES") return true;
-      if (filterMAJ === "AVEC_MAJ") return r.updates_count > 0;
-      if (filterMAJ === "CRITIQUES")
-        return !!r.mises_a_jour && r.mises_a_jour.includes("🔴");
-      if (filterMAJ === "A_JOUR") return r.updates_count === 0;
-      return true;
-    });
-  }, [afterIAFilter, filterMAJ]);
-
+  // Les filtres IA/MAJ sont appliqués côté serveur (voir fetchResults) —
+  // ces compteurs viennent de /api/stats, calculés sur tout le parc, pas
+  // seulement sur la page affichée.
   const iaCount = (status: IAFilter) =>
-    status === "TOUS"
-      ? results.length
-      : results.filter((r) => r.ia_status === status).length;
+    status === "TOUS" ? stats?.total_sites ?? 0 : stats?.ia_status[status.toLowerCase() as "ok" | "attention" | "alerte"] ?? 0;
 
   const majCount = (f: MAJFilter) => {
-    if (f === "TOUTES") return afterIAFilter.length;
-    if (f === "AVEC_MAJ")
-      return afterIAFilter.filter((r) => r.updates_count > 0).length;
-    if (f === "CRITIQUES")
-      return afterIAFilter.filter(
-        (r) => r.mises_a_jour && r.mises_a_jour.includes("🔴"),
-      ).length;
-    if (f === "A_JOUR")
-      return afterIAFilter.filter((r) => r.updates_count === 0).length;
+    if (f === "TOUTES") return stats?.maj_status.toutes ?? 0;
+    if (f === "AVEC_MAJ") return stats?.maj_status.avec_maj ?? 0;
+    if (f === "CRITIQUES") return stats?.maj_status.critiques ?? 0;
+    if (f === "A_JOUR") return stats?.maj_status.a_jour ?? 0;
     return 0;
   };
 
@@ -256,6 +268,7 @@ export default function SanteDesSitesPage() {
         onClick={() => {
           setFilterIA(value);
           setExpandedRow(null);
+          setPage(1);
         }}
         className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors cursor-pointer ${
           active
@@ -276,6 +289,7 @@ export default function SanteDesSitesPage() {
         onClick={() => {
           setFilterMAJ(value);
           setExpandedRow(null);
+          setPage(1);
         }}
         className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors cursor-pointer ${
           active
@@ -507,24 +521,19 @@ export default function SanteDesSitesPage() {
               <div className="flex-3 min-w-0">Versions</div>
             </div>
 
-            {results.length === 0 ? (
+            {totalResults === 0 ? (
               <div
                 className="px-6 py-12 text-center"
                 style={{ color: "rgba(23,25,28,0.4)" }}
               >
                 <p>
-                  Aucune donnee. Lancez un audit pour afficher les resultats.
+                  {search || filterIA !== "TOUS" || filterMAJ !== "TOUTES"
+                    ? "Aucun resultat pour cette combinaison de filtres."
+                    : "Aucune donnee. Lancez un audit pour afficher les resultats."}
                 </p>
               </div>
-            ) : filteredResults.length === 0 ? (
-              <div
-                className="px-6 py-12 text-center"
-                style={{ color: "rgba(23,25,28,0.4)" }}
-              >
-                <p>Aucun resultat pour cette combinaison de filtres.</p>
-              </div>
             ) : (
-              filteredResults.map((result) => {
+              results.map((result) => {
                 const rowKey = result.url;
                 const isExpanded = expandedRow === rowKey;
                 const plugins =

@@ -160,8 +160,18 @@ async def launch_scan(
     )
 
 @app.get("/api/results", response_model=PaginatedResults)
-async def get_results(request: Request, page: int = 1, per_page: int = 25, search: str = ""):
-    print(f"[audit] /api/results from {request.client.host} origin={request.headers.get('origin')} page={page} search={search!r}")
+async def get_results(
+    request: Request,
+    page: int = 1,
+    per_page: int = 25,
+    search: str = "",
+    ia_status: str = "",
+    maj: str = "",
+):
+    print(
+        f"[audit] /api/results from {request.client.host} origin={request.headers.get('origin')} "
+        f"page={page} search={search!r} ia_status={ia_status!r} maj={maj!r}"
+    )
 
     # Priorité : fichier JSON local (indépendant de la DB)
     if os.path.exists(RESULTS_FILE):
@@ -180,6 +190,14 @@ async def get_results(request: Request, page: int = 1, per_page: int = 25, searc
                     d for d in data
                     if needle in (d.get("client") or "").lower() or needle in (d.get("url") or "").lower()
                 ]
+            if ia_status:
+                data = [d for d in data if d.get("ia_status") == ia_status]
+            if maj == "avec_maj":
+                data = [d for d in data if (d.get("updates_count") or 0) > 0]
+            elif maj == "critiques":
+                data = [d for d in data if "🔴" in (d.get("mises_a_jour") or "")]
+            elif maj == "a_jour":
+                data = [d for d in data if (d.get("updates_count") or 0) == 0]
 
             total = len(data)
             total_pages = max(1, -(-total // per_page))  # ceil division
@@ -192,10 +210,13 @@ async def get_results(request: Request, page: int = 1, per_page: int = 25, searc
         except Exception as e:
             print(f"⚠️  Erreur lecture results.json: {e}")
 
-    # Fallback : PocketBase (pagination + recherche natives, chaque projet
-    # porte déjà son dernier état — pas besoin de dédoublonnage)
+    # Fallback : PocketBase (pagination + filtres natifs, chaque projet porte
+    # déjà son dernier état — pas besoin de dédoublonnage)
     try:
-        return call_pb_worker("get_results_summary", {"page": page, "per_page": per_page, "search": search})
+        return call_pb_worker(
+            "get_results_summary",
+            {"page": page, "per_page": per_page, "search": search, "ia_status": ia_status, "maj": maj},
+        )
     except Exception as e:
         print(f"❌ Erreur PocketBase : {e}")
         raise HTTPException(status_code=500, detail=str(e))

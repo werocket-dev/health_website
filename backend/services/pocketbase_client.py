@@ -69,20 +69,41 @@ def _project_to_result(r) -> dict:
     }
 
 
-def get_results_summary(page: int = 1, per_page: int = 25, search: str = "") -> dict:
+def _build_filter(pb, search: str = "", ia_status: str = "", maj: str = "") -> str:
+    """
+    Combine recherche texte + filtre IA + filtre MAJ en une seule expression
+    PocketBase (ET logique entre les trois, OU logique entre client_name/url
+    pour la recherche). Chaque morceau est optionnel.
+    """
+    clauses = []
+    if search:
+        clauses.append(pb.filter('(client_name ~ {:q} || url ~ {:q})', {"q": search}))
+    if ia_status:
+        clauses.append(pb.filter('latest_ia_status = {:s}', {"s": ia_status}))
+    if maj == "avec_maj":
+        clauses.append('latest_updates_count > 0')
+    elif maj == "critiques":
+        clauses.append(pb.filter('latest_mises_a_jour ~ {:c}', {"c": "🔴"}))
+    elif maj == "a_jour":
+        clauses.append('latest_updates_count = 0')
+    return " && ".join(clauses)
+
+
+def get_results_summary(
+    page: int = 1, per_page: int = 25, search: str = "", ia_status: str = "", maj: str = ""
+) -> dict:
     """
     Équivalent paginé du SELECT DISTINCT ON (project_id) ... FROM site_audits
     — sauf qu'ici chaque projet EST déjà son propre dernier état (latest_*),
     donc une simple lecture triée/paginée suffit, sans dédoublonnage.
-    `search` filtre sur le nom du client ou l'URL (recherche PocketBase
-    native, pas de scan côté Python).
+    `search`/`ia_status`/`maj` filtrent côté PocketBase (pas de scan Python) :
+    ia_status = "OK"/"ATTENTION"/"ALERTE", maj = "avec_maj"/"critiques"/"a_jour".
     """
     pb = get_client()
     query_params = {"sort": "-last_audit_at"}
-    if search:
-        query_params["filter"] = pb.filter(
-            'client_name ~ {:q} || url ~ {:q}', {"q": search}
-        )
+    filter_expr = _build_filter(pb, search, ia_status, maj)
+    if filter_expr:
+        query_params["filter"] = filter_expr
     result = pb.collection("projects").get_list(page, per_page, query_params)
     return {
         "items": [_project_to_result(r) for r in result.items],
@@ -105,9 +126,14 @@ def get_stats_summary() -> dict:
     total_updates = sum(p.latest_updates_count or 0 for p in projects)
     scans_agent = sum(1 for p in projects if p.latest_methode_scan == "Agent")
 
+    avec_maj = sum(1 for p in projects if (p.latest_updates_count or 0) > 0)
+    critiques = sum(1 for p in projects if "🔴" in (p.latest_mises_a_jour or ""))
+    a_jour = sum(1 for p in projects if (p.latest_updates_count or 0) == 0)
+
     return {
         "total_sites": total_sites,
         "ia_status": {"ok": ia_ok, "attention": ia_attention, "alerte": ia_alerte},
+        "maj_status": {"toutes": total_sites, "avec_maj": avec_maj, "critiques": critiques, "a_jour": a_jour},
         "kpis": {"updates_pending": total_updates, "agent_coverage": scans_agent},
     }
 
