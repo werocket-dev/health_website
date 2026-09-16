@@ -182,10 +182,10 @@ export default function SanteDesSitesPage() {
     }
   };
 
-  const handleLaunchAudit = async () => {
+  const handleLaunchAudit = async (limit?: number) => {
     if (!API_URL) { alert("API non configurée."); return; }
     try {
-      await axios.post(`${API_URL}/api/scan`);
+      await axios.post(`${API_URL}/api/scan`, limit ? { limit } : {});
       setAuditProgress({ status: "running", percent: 0, label: "Démarrage de l'audit..." });
     } catch (error) {
       console.error("[audit] Erreur lancement audit:", error);
@@ -308,16 +308,29 @@ export default function SanteDesSitesPage() {
                   Suivi IA, mises a jour et versions critiques en temps reel.
                 </p>
               </div>
-              <button
-                onClick={handleLaunchAudit}
-                className="px-6 py-3 rounded-xl font-semibold transition-transform shadow-lg hover:shadow-xl cursor-pointer"
-                style={{
-                  background: "var(--color-neon)",
-                  color: "var(--color-ink)",
-                }}
-              >
-                Lancer l&apos;audit global
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => handleLaunchAudit(20)}
+                  className="px-4 py-3 rounded-xl font-medium text-sm transition-colors cursor-pointer"
+                  style={{
+                    background: "rgba(23,25,28,0.06)",
+                    color: "var(--color-ink)",
+                  }}
+                  title="Lance l'audit sur seulement 20 sites, pour tester"
+                >
+                  Audit test (20 sites)
+                </button>
+                <button
+                  onClick={() => handleLaunchAudit()}
+                  className="px-6 py-3 rounded-xl font-semibold transition-transform shadow-lg hover:shadow-xl cursor-pointer"
+                  style={{
+                    background: "var(--color-neon)",
+                    color: "var(--color-ink)",
+                  }}
+                >
+                  Lancer l&apos;audit global
+                </button>
+              </div>
             </div>
 
             {apiUnavailable && (

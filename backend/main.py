@@ -58,8 +58,9 @@ app.add_middleware(
 # ============================================================================
 
 class ScanRequest(BaseModel):
-    url: str # Simplifié en str pour éviter des erreurs de validation trop strictes au début
+    url: Optional[str] = None # Si absent : audit sur les sites actifs en BDD (voir `limit`)
     client_name: Optional[str] = "Client API"
+    limit: Optional[int] = None # Borne le nombre de sites (audit de test), ignoré si `url` est fourni
 
 class ScanResponse(BaseModel):
     message: str
@@ -134,19 +135,21 @@ async def launch_scan(
     """
     Lance l'audit en tâche de fond (ne bloque pas l'interface)
     """
-    print(f"[audit] /api/scan from {request.client.host} origin={request.headers.get('origin')}")
-    if scan_request:
+    print(f"[audit] /api/scan from {request.client.host} origin={request.headers.get('origin')} limit={scan_request.limit if scan_request else None}")
+    limit = None
+    if scan_request and scan_request.url:
         sites_list = [{"Client": scan_request.client_name, "URL": scan_request.url}]
     else:
-        sites_list = None  # Le moteur lira les sites depuis la BDD
+        sites_list = None  # Le moteur lira les sites actifs depuis PocketBase
+        limit = scan_request.limit if scan_request else None
 
     _audit_progress.update({"status": "running", "percent": 0, "label": "Démarrage de l'audit..."})
-    background_tasks.add_task(run_audit, sites_list, _on_progress)
+    background_tasks.add_task(run_audit, sites_list, _on_progress, limit)
 
     return ScanResponse(
         message="Audit lancé en arrière-plan 🚀",
         status="pending",
-        url=scan_request.url if scan_request else "BDD"
+        url=scan_request.url if scan_request and scan_request.url else ("BDD" + (f" (limité à {limit})" if limit else ""))
     )
 
 @app.get("/api/results", response_model=List[SiteResult])
@@ -158,6 +161,11 @@ async def get_results(request: Request, limit: int = 100):
         try:
             with open(RESULTS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # Garde-fou : PHP sérialise un tableau associatif vide en JSON
+            # `[]`, ce que Pydantic (Optional[dict]) rejette.
+            for entry in data:
+                if not isinstance(entry.get("licenses"), dict):
+                    entry["licenses"] = {}
             return data[:limit]
         except Exception as e:
             print(f"⚠️  Erreur lecture results.json: {e}")

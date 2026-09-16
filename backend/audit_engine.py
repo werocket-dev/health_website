@@ -85,7 +85,7 @@ def predict_visual(img_path):
 
 # --- COEUR DU SCANNER ---
 
-async def run_audit(sites_list=None, progress_callback=None):
+async def run_audit(sites_list=None, progress_callback=None, limit=None):
     def _progress(percent: int, label: str, status: str = "running"):
         if progress_callback:
             progress_callback({"status": status, "percent": percent, "label": label})
@@ -95,15 +95,18 @@ async def run_audit(sites_list=None, progress_callback=None):
     Args:
         sites_list: Liste de dictionnaires avec les clés 'Client' et 'URL'
                    Ex: [{'Client': 'Mon Client', 'URL': 'https://example.com'}]
-                   Si None, récupère les sites de test depuis la BDD
+                   Si None, récupère les sites actifs depuis PocketBase
+        limit: Borne le nombre de sites récupérés depuis PocketBase quand
+               sites_list est None (utile pour un audit de test) — sans
+               effet si sites_list est fourni explicitement.
 
     Returns:
         dict: Statistiques de l'audit avec détails par site
     """
     # 1. Récupération des sites à auditer
     if sites_list is None:
-        # Mode par défaut : tous les sites actifs depuis PocketBase
-        sites = call_pb_worker("get_active_projects")
+        # Mode par défaut : sites actifs depuis PocketBase (tous, ou `limit` premiers)
+        sites = call_pb_worker("get_active_projects", {"limit": limit} if limit else {})
     else:
         # Mode API : utilise la liste fournie en paramètre
         sites = sites_list

@@ -99,10 +99,15 @@ def get_stats_summary() -> dict:
     }
 
 
-def get_active_projects() -> list[dict]:
-    """Sites actifs à auditer (remplace le SELECT * FROM projects WHERE is_active)."""
+def get_active_projects(limit: int | None = None) -> list[dict]:
+    """
+    Sites actifs à auditer (remplace le SELECT * FROM projects WHERE is_active).
+    `limit` sert à borner un audit de test sans devoir désactiver des sites.
+    """
     pb = get_client()
     records = pb.collection("projects").get_full_list(query_params={"filter": "is_active = true"})
+    if limit:
+        records = records[:limit]
     return [
         {
             "project_id": r.id,
@@ -182,7 +187,7 @@ def update_project_status(project_id: str, latest: dict) -> dict:
     payload = {
         "previous_ia_status": current.latest_ia_status,
         "previous_updates_count": current.latest_updates_count,
-        "previous_licenses": current.latest_licenses,
+        "previous_licenses": current.latest_licenses if isinstance(current.latest_licenses, dict) else {},
 
         "latest_methode_scan": latest["methode_scan"],
         "latest_ia_status": latest["ia_status"],

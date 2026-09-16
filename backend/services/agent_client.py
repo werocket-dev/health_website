@@ -259,7 +259,12 @@ def parse_agent_data(data):
     theme_name = theme.get('name', 'N/A')
     theme_version = theme.get('version', 'N/A')
 
-    licenses_info = data.get('licenses', {})
+    # PHP sérialise un tableau associatif vide en JSON `[]`, pas `{}` — sans
+    # ce garde-fou, un site sans licence détectée casserait la validation
+    # Pydantic (Optional[dict]) côté API.
+    licenses_info = data.get('licenses') or {}
+    if not isinstance(licenses_info, dict):
+        licenses_info = {}
 
     plugins_data = data.get('plugins', [])
     plugins_dict = {}
