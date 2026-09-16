@@ -345,7 +345,7 @@ export default function SanteDesSitesPage() {
               </div>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => handleLaunchAudit(20)}
+                  onClick={() => handleLaunchAudit(75)}
                   className="px-4 py-3 rounded-xl font-medium text-sm transition-colors cursor-pointer"
                   style={{
                     background: "rgba(23,25,28,0.06)",
@@ -353,7 +353,7 @@ export default function SanteDesSitesPage() {
                   }}
                   title="Lance l'audit sur seulement 20 sites, pour tester"
                 >
-                  Audit test (20 sites)
+                  Audit test (75 sites)
                 </button>
                 <button
                   onClick={() => handleLaunchAudit()}
