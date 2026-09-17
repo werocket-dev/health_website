@@ -1,4 +1,13 @@
 import os
+
+# ⚠️ Doit être défini AVANT tout subprocess.run() dans ce process. Sur macOS,
+# lancer un sous-processus (fork+exec) depuis un process devenu multi-thread
+# (uvloop + clients réseau async) fait planter les handlers post-fork de
+# Network.framework/os_log ("multi-threaded process forked" / "crashed on
+# child side of fork pre-exec"). Sans effet sur Linux (production/Dokploy),
+# où ce mécanisme Objective-C n'existe pas.
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
 import json
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration

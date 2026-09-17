@@ -1,4 +1,10 @@
 import os
+
+# ⚠️ Voir backend/main.py pour l'explication complète : nécessaire avant tout
+# subprocess.run() (pb_worker.py) pour éviter un crash macOS ("multi-threaded
+# process forked"). Sans effet sur Linux/Dokploy.
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
 import sys
 import json
 import asyncio

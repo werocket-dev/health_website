@@ -1,4 +1,10 @@
 import os
+
+# ⚠️ Voir main.py pour l'explication complète : nécessaire avant tout
+# subprocess.run() (tf_infer.py, pb_worker.py) pour éviter un crash macOS
+# ("multi-threaded process forked"). Sans effet sur Linux/Dokploy.
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
 import sys
 import asyncio
 import random
