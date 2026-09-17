@@ -25,7 +25,9 @@ def get_random_active_projects(limit: int = 350) -> list[dict]:
     lancement du driver Playwright sur macOS.
     """
     cmd = [sys.executable, _PB_WORKER_SCRIPT, "get_random_active_projects", json.dumps({"limit": limit})]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    # close_fds=False force posix_spawn() au lieu de fork()+exec() sur macOS —
+    # voir audit_engine.py:call_pb_worker pour l'explication complète.
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, close_fds=False)
     if result.returncode != 0 or not result.stdout.strip():
         raise RuntimeError(f"pb_worker a échoué : {result.stderr.strip()[:300]}")
     return json.loads(result.stdout.strip())

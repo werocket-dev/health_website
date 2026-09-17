@@ -50,6 +50,8 @@ def main():
     elif command == "sync_site_plugins":
         pbc.sync_site_plugins(args["project_id"], args["plugins"])
         result = {"success": True}
+    elif command == "write_audit_results":
+        result = pbc.write_audit_results(args["entries"])
     else:
         print(json.dumps({"error": f"commande inconnue: {command}"}))
         sys.exit(1)

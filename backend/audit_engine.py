@@ -1,8 +1,11 @@
 import os
 
 # ⚠️ Voir main.py pour l'explication complète : nécessaire avant tout
-# subprocess.run() (tf_infer.py, pb_worker.py) pour éviter un crash macOS
+# subprocess.run() (tf_infer.py, pb_worker.py) pour limiter un crash macOS
 # ("multi-threaded process forked"). Sans effet sur Linux/Dokploy.
+# Insuffisant à lui seul (crash reproduit malgré cette variable) — le vrai fix
+# est close_fds=False sur chaque subprocess.run(), qui fait basculer Python
+# sur posix_spawn() au lieu de fork()+exec() (voir call_pb_worker/predict_visual).
 os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
 import sys
@@ -36,7 +39,7 @@ _TF_INFER_SCRIPT = os.path.join(os.path.dirname(__file__), "tf_infer.py")
 _MODEL_PATH = os.path.join(os.path.dirname(__file__), "werocket_vision_model.h5")
 _PB_WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "pb_worker.py")
 
-def call_pb_worker(command: str, args: dict | None = None):
+def call_pb_worker(command: str, args: dict | None = None, timeout: int = 30):
     """
     Exécute une opération PocketBase dans un sous-processus isolé — le
     client PocketBase (httpx) authentifié dans ce process casse le
@@ -49,20 +52,33 @@ def call_pb_worker(command: str, args: dict | None = None):
     if args is not None:
         cmd.append(json.dumps(args, ensure_ascii=False))
 
-    # L'instance PocketBase a montré des timeouts réseau ponctuels en test —
-    # un seul essai suffit à les absorber sans bloquer tout l'audit.
+    # Le VPS distant hébergeant PocketBase a montré des ConnectTimeout sous
+    # charge (chaque appel refait une connexion + un login, sans keep-alive
+    # possible vu l'isolation en sous-processus) — 3 tentatives avec backoff
+    # progressif absorbent ça sans bloquer tout l'audit pour autant.
     last_error = None
-    for attempt in range(2):
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    backoffs = [2, 5]
+    for attempt in range(3):
+        t0 = time_module.monotonic()
+        # close_fds=False force Python à utiliser posix_spawn() plutôt que
+        # fork()+exec() sur macOS (cf. commentaire en tête de fichier) : c'est
+        # ça, et non la variable d'env seule, qui évite vraiment le crash —
+        # confirmé après un crash survenu malgré OBJC_DISABLE_INITIALIZE_FORK_SAFETY.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, close_fds=False)
+        elapsed = time_module.monotonic() - t0
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout.strip())
             if isinstance(data, dict) and "error" in data:
                 raise RuntimeError(f"pb_worker '{command}' : {data['error']}")
             return data
-        last_error = result.stderr.strip()[:300]
-        if attempt == 0:
-            time_module.sleep(2)
-    raise RuntimeError(f"pb_worker '{command}' a échoué : {last_error}")
+        # Ligne la plus utile d'une traceback Python : la dernière (le type
+        # + message de l'exception), le reste n'apporte rien en log console.
+        stderr_lines = [l for l in result.stderr.strip().splitlines() if l.strip()]
+        last_error = stderr_lines[-1] if stderr_lines else f"exit code {result.returncode}, pas de stderr"
+        print(f"      ⚠️ pb_worker '{command}' tentative {attempt + 1}/3 échouée ({elapsed:.1f}s) : {last_error}")
+        if attempt < len(backoffs):
+            time_module.sleep(backoffs[attempt])
+    raise RuntimeError(f"pb_worker '{command}' a échoué après 3 tentatives : {last_error}")
 
 def predict_visual(img_path):
     """Inférence TF dans un subprocess isolé — évite le conflit mutex avec Playwright sur macOS ARM."""
@@ -75,7 +91,7 @@ def predict_visual(img_path):
     try:
         result = subprocess.run(
             [sys.executable, _TF_INFER_SCRIPT, img_path, _MODEL_PATH],
-            capture_output=True, text=True, timeout=60
+            capture_output=True, text=True, timeout=60, close_fds=False
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())
@@ -371,6 +387,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
     # ─────────────────────────────────────────────────────────────────────────
     _progress(90, "💾 Enregistrement des résultats...")
     json_results = []
+    pb_write_queue = []  # accumulé ici, écrit en un seul appel groupé après la boucle
     for entry in collected_sites:
         if not entry.get("success"):
             continue
@@ -437,21 +454,18 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
                     "updates_count": updates_info["count_updates"],
                     "licenses": licenses_info,
                 }
-                call_pb_worker("update_project_status", {
+                pb_write_queue.append({
                     "project_id": project_id,
                     "latest": {
                         **pb_payload,
                         "mises_a_jour": updates_list,
                         "audited_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     },
-                })
-                call_pb_worker("create_site_audit", {"project_id": project_id, "entry": pb_payload})
-                call_pb_worker("sync_site_plugins", {
-                    "project_id": project_id,
+                    "entry": pb_payload,
                     "plugins": build_plugins_payload(plugins_dict, updates_info),
                 })
             except Exception as db_err:
-                print(f"   ⚠️  Écriture PocketBase ignorée ({project_name}): {db_err}")
+                print(f"   ⚠️  Préparation écriture PocketBase ignorée ({project_name}): {db_err}")
                 sentry_sdk.capture_exception(db_err)
 
         # Mise à jour des statistiques
@@ -504,6 +518,21 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
             "updates_list": updates_info.get("updates_needed", []),
             "updates_raw": updates_info.get("updates_needed_raw", [])
         })
+
+    # Écriture PocketBase groupée : une seule connexion/authentification pour
+    # tous les sites, au lieu d'un subprocess+login par site — évite la rafale
+    # de connexions neuves vers le VPS distant qui déclenchait des échecs
+    # réseau (ConnectTimeout/EHOSTDOWN) en cours d'audit.
+    if pb_write_queue:
+        _progress(95, "💾 Synchronisation PocketBase...")
+        try:
+            pb_result = call_pb_worker("write_audit_results", {"entries": pb_write_queue}, timeout=180)
+            print(f"✅ PocketBase : {pb_result['written']}/{len(pb_write_queue)} sites synchronisés")
+            for fail in pb_result.get("failed", []):
+                print(f"   ⚠️  Écriture PocketBase ignorée (project_id={fail['project_id']}): {fail['error']}")
+        except Exception as db_err:
+            print(f"⚠️  Synchronisation PocketBase entièrement échouée (results.json reste à jour) : {db_err}")
+            sentry_sdk.capture_exception(db_err)
 
     # Sauvegarde résultats JSON local
     if json_results:

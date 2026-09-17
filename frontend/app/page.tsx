@@ -9,7 +9,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 type IAStatus = "ALERTE" | "ATTENTION" | "OK" | "N/A" | "";
 
 type LicenseInfo = {
-  valid: boolean;
+  valid: boolean | null;
+  status?: string;
   item?: string;
   expires?: string;
 };
@@ -27,6 +28,7 @@ type HealthResult = {
   mises_a_jour?: string | null;
   wp_version?: string | null;
   php_version?: string | null;
+  builder?: string | null;
   licenses?: Record<string, LicenseInfo>;
 };
 
@@ -695,6 +697,19 @@ export default function SanteDesSitesPage() {
                             {result.php_version}
                           </span>
                         </div>
+                        {result.builder && result.builder !== "Inconnu" && (
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="font-medium"
+                              style={{ color: "rgba(23,25,28,0.75)" }}
+                            >
+                              Builder
+                            </span>
+                            <span style={{ color: "rgba(23,25,28,0.6)" }}>
+                              {result.builder}
+                            </span>
+                          </div>
+                        )}
                         {result.licenses &&
                           Object.entries(result.licenses).map(([key, lic]) => (
                             <div key={key} className="flex items-center gap-1.5 whitespace-nowrap">
@@ -705,9 +720,20 @@ export default function SanteDesSitesPage() {
                                 {key}
                               </span>
                               <span
-                                style={{ color: lic.valid ? "#087A61" : "#dc2626" }}
+                                style={{
+                                  color:
+                                    lic.valid === true
+                                      ? "#087A61"
+                                      : lic.valid === false
+                                      ? "#dc2626"
+                                      : "rgba(23,25,28,0.5)",
+                                }}
                               >
-                                {lic.valid ? "✓ Active" : "✗ Inactive"}
+                                {lic.valid === true
+                                  ? "✓ Active"
+                                  : lic.valid === false
+                                  ? "✗ Inactive"
+                                  : "⚠ À vérifier"}
                               </span>
                               {lic.expires && (
                                 <span style={{ color: "rgba(23,25,28,0.5)" }}>

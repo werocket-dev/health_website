@@ -41,7 +41,9 @@ def get_client() -> PocketBase:
     if not POCKETBASE_PUBLIC_URL:
         raise RuntimeError("POCKETBASE_PUBLIC_URL manquant dans backend/.env")
 
-    pb = PocketBase(POCKETBASE_PUBLIC_URL)
+    # Timeout par défaut d'httpx (5s) trop court pour ce VPS distant sous charge
+    # (les ConnectTimeout observés en test venaient de là, pas d'une vraie panne).
+    pb = PocketBase(POCKETBASE_PUBLIC_URL, timeout=20.0)
     pb.collection("_superusers").auth_with_password(POCKETBASE_ADMIN_EMAIL, POCKETBASE_ADMIN_PASSWORD)
     _pb = pb
     return _pb
@@ -288,3 +290,27 @@ def sync_site_plugins(project_id: str, plugins: list[dict]) -> None:
         for plugin in plugins
     ]
     pb.send("/api/batch", {"method": "POST", "body": {"requests": requests_payload}})
+
+
+def write_audit_results(entries: list[dict]) -> dict:
+    """
+    Écrit les résultats de TOUS les sites d'un audit en une seule connexion/
+    authentification PocketBase (au lieu d'un subprocess+login par site) —
+    évite la rafale de connexions neuves vers le VPS distant qui déclenchait
+    des ConnectTimeout/EHOSTDOWN pendant les audits.
+
+    `entries` : liste de dicts {project_id, latest, entry, plugins}.
+    Une erreur sur un site n'interrompt pas les suivants ; les échecs sont
+    remontés dans le résultat pour rester visibles dans les logs d'audit.
+    """
+    get_client()  # authentifie une fois, réutilisé par les 3 appels ci-dessous
+    failed = []
+    for item in entries:
+        project_id = item["project_id"]
+        try:
+            update_project_status(project_id, item["latest"])
+            create_site_audit(project_id, item["entry"])
+            sync_site_plugins(project_id, item["plugins"])
+        except Exception as e:
+            failed.append({"project_id": project_id, "error": str(e)[:300]})
+    return {"success": True, "written": len(entries) - len(failed), "failed": failed}
