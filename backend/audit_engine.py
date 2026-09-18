@@ -22,6 +22,7 @@ from services.agent_client import (
     connect_to_agent,
     update_plugin_via_agent,
     update_core_via_agent,
+    delete_theme_via_agent,
     parse_agent_data,
     refresh_site_in_results,
 )
@@ -263,6 +264,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
                 version_mysql = "N/A"
                 theme_name = "N/A"
                 theme_version = "N/A"
+                themes_list = []
                 wp_detecte = False
 
                 if agent_result and agent_result.get('success'):
@@ -275,6 +277,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
                     version_mysql = parsed["version_mysql"]
                     theme_name = parsed["theme_name"]
                     theme_version = parsed["theme_version"]
+                    themes_list = parsed["themes_list"]
                     licenses_info = parsed["licenses"]
                     plugins_dict = parsed["plugins_dict"]
                     tech_info = parsed["tech_info"]
@@ -304,6 +307,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
                     version_mysql = "N/A (Scraping)"
                     theme_name = "N/A (Scraping)"
                     theme_version = "N/A (Scraping)"
+                    themes_list = []  # Non disponible en scraping
                     licenses_info = {}
 
                     print(f"   ✅ [SCRAPING] Builder: {tech_info['builder']} | Plugins: {len(plugins_dict)} | MAJ: {updates_info['count_updates']}")
@@ -325,6 +329,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
                     "version_mysql": version_mysql,
                     "theme_name": theme_name,
                     "theme_version": theme_version,
+                    "themes": themes_list,
                     "licenses": licenses_info,
                     "wp_detecte": wp_detecte,
                     "agent_error": agent_result.get('error') if agent_result and not agent_result.get('success') else None,
@@ -409,6 +414,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
         theme_version = entry["theme_version"]
         wp_detecte = entry["wp_detecte"]
         licenses_info = entry.get("licenses", {})
+        themes_list = entry.get("themes", [])
 
         updates_list = ", ".join(updates_info.get("updates_needed", [])) or "Aucune"
 
@@ -430,6 +436,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
             "mises_a_jour": updates_list,
             "methode": methode_scan,
             "licenses": licenses_info,
+            "themes": themes_list,
         })
 
         if not project_id:

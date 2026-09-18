@@ -21,6 +21,7 @@ from audit_engine import (
     run_audit,
     update_plugin_via_agent,
     update_core_via_agent,
+    delete_theme_via_agent,
     refresh_site_in_results,
     call_pb_worker,
     RESULTS_FILE,
@@ -84,6 +85,14 @@ class PluginUpdateResponse(BaseModel):
     success: bool
     message: str
 
+class ThemeDeleteRequest(BaseModel):
+    url: str
+    theme_slug: str
+
+class ThemeDeleteResponse(BaseModel):
+    success: bool
+    message: str
+
 class CoreUpdateRequest(BaseModel):
     url: str
 
@@ -110,6 +119,7 @@ class SiteResult(BaseModel):
     mises_a_jour: Optional[str] = "Aucune"
     methode: Optional[str] = "N/A"
     licenses: Optional[dict] = None
+    themes: Optional[list] = None
 
 class PaginatedResults(BaseModel):
     items: List[SiteResult]
@@ -243,6 +253,21 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return PluginUpdateResponse(success=True, message=result.get('message', 'Plugin mis à jour avec succès'))
+    raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
+
+@app.post("/api/delete-theme", response_model=ThemeDeleteResponse)
+async def delete_theme(request: Request, body: ThemeDeleteRequest):
+    """
+    Supprime un thème WordPress inutilisé via l'Agent.
+    """
+    print(f"[audit] /api/delete-theme from {request.client.host} url={body.url} theme={body.theme_slug}")
+    import asyncio
+    result = await asyncio.to_thread(delete_theme_via_agent, body.url, body.theme_slug)
+    if result.get('success'):
+        refresh = await asyncio.to_thread(refresh_site_in_results, body.url)
+        if not refresh.get('success'):
+            print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
+        return ThemeDeleteResponse(success=True, message=result.get('message', 'Thème supprimé avec succès'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.post("/api/update-core", response_model=CoreUpdateResponse)

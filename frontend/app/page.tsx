@@ -15,6 +15,14 @@ type LicenseInfo = {
   expires?: string;
 };
 
+type ThemeInfo = {
+  slug: string;
+  name: string;
+  version: string;
+  is_active: boolean;
+  is_parent_of_active: boolean;
+};
+
 type HealthResult = {
   url: string;
   client: string;
@@ -30,6 +38,7 @@ type HealthResult = {
   php_version?: string | null;
   builder?: string | null;
   licenses?: Record<string, LicenseInfo>;
+  themes?: ThemeInfo[];
 };
 
 type IAFilter = "TOUS" | "ALERTE" | "ATTENTION" | "OK";
@@ -99,6 +108,7 @@ export default function SanteDesSitesPage() {
   const [filterMAJ, setFilterMAJ] = useState<MAJFilter>("TOUTES");
   const [apiUnavailable, setApiUnavailable] = useState<boolean>(false);
   const [updatingPlugins, setUpdatingPlugins] = useState<Record<string, "loading" | "success" | "error">>({});
+  const [deletingThemes, setDeletingThemes] = useState<Record<string, "loading" | "success" | "error">>({});
   const [auditProgress, setAuditProgress] = useState<{ status: string; percent: number; label: string } | null>(null);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
@@ -234,6 +244,22 @@ export default function SanteDesSitesPage() {
       setUpdatingPlugins((prev) => ({ ...prev, [key]: "success" }));
     } catch {
       setUpdatingPlugins((prev) => ({ ...prev, [key]: "error" }));
+    }
+  };
+
+  const handleDeleteTheme = async (siteUrl: string, themeSlug: string, themeName: string) => {
+    const confirmed = window.confirm(
+      `Supprimer définitivement le thème "${themeName}" sur ce site ? Cette action est irréversible.`
+    );
+    if (!confirmed) return;
+
+    const key = `${siteUrl}::theme::${themeSlug}`;
+    setDeletingThemes((prev) => ({ ...prev, [key]: "loading" }));
+    try {
+      await axios.post(`${API_URL}/api/delete-theme`, { url: siteUrl, theme_slug: themeSlug });
+      setDeletingThemes((prev) => ({ ...prev, [key]: "success" }));
+    } catch {
+      setDeletingThemes((prev) => ({ ...prev, [key]: "error" }));
     }
   };
 
@@ -784,6 +810,51 @@ export default function SanteDesSitesPage() {
                                   }}
                                 >
                                   {updateState === "loading" ? "..." : updateState === "success" ? "✓ OK" : updateState === "error" ? "✗ Erreur" : "Mettre à jour"}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {isExpanded && result.themes && result.themes.length > 0 && (
+                      <div className="px-6 pb-4 space-y-1.5">
+                        <p
+                          className="text-xs font-semibold uppercase tracking-wide mb-2"
+                          style={{ color: "rgba(23,25,28,0.45)" }}
+                        >
+                          Thèmes installés ({result.themes.length})
+                        </p>
+                        {result.themes.map((theme) => {
+                          const key = `${result.url}::theme::${theme.slug}`;
+                          const state = deletingThemes[key];
+                          const canDelete = !theme.is_active && !theme.is_parent_of_active;
+
+                          return (
+                            <div
+                              key={key}
+                              className="flex items-center justify-between text-xs py-1.5 px-3 border-l-4 rounded-r"
+                              style={{
+                                color: "rgba(23,25,28,0.8)",
+                                borderColor: theme.is_active ? "#10b981" : "rgba(23,25,28,0.15)",
+                                background: theme.is_active ? "rgba(16,185,129,0.06)" : "rgba(23,25,28,0.02)",
+                              }}
+                            >
+                              <span className="flex-1 mr-3">
+                                {theme.name} ({theme.version}){theme.is_active && " — actif"}
+                                {theme.is_parent_of_active && " — parent du thème actif"}
+                              </span>
+                              {canDelete && (
+                                <button
+                                  onClick={() => handleDeleteTheme(result.url, theme.slug, theme.name)}
+                                  disabled={!!state}
+                                  className="shrink-0 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                                  style={{
+                                    background: state === "success" ? "rgba(0,226,158,0.15)" : state === "error" ? "rgba(220,38,38,0.1)" : "rgba(220,38,38,0.08)",
+                                    color: state === "success" ? "#087A61" : "#dc2626",
+                                  }}
+                                >
+                                  {state === "loading" ? "..." : state === "success" ? "✓ Supprimé" : state === "error" ? "✗ Erreur" : "Supprimer"}
                                 </button>
                               )}
                             </div>

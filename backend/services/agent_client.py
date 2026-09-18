@@ -178,6 +178,65 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
     except Exception as e:
         return {'success': False, 'error': str(e)[:80]}
 
+def delete_theme_via_agent(url: str, theme_slug: str) -> dict:
+    """
+    Supprime un thème inutilisé via l'Agent WeRocket WordPress.
+    """
+    if not AGENT_AVAILABLE:
+        return {'success': False, 'error': 'Agent non configuré (variables .env manquantes)'}
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        try:
+            pre_check = session.head(url, timeout=5, allow_redirects=True)
+            final_base_url = pre_check.url.rstrip('/')
+        except Exception:
+            final_base_url = url.rstrip('/')
+
+        timestamp = int(time.time())
+        route = "/werocket/v1/delete-theme"
+        message = f"{final_base_url}|{timestamp}|{route}"
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
+
+        payload = {
+            'timestamp': timestamp,
+            'signature': signature,
+            'theme_slug': theme_slug,
+        }
+
+        headers = {
+            'X-WeRocket-Key': WEROCKET_AGENT_HEADER_KEY,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        endpoint = f"{final_base_url}/wp-json/werocket/v1/delete-theme"
+        print(f"      🗑️  Suppression du thème '{theme_slug}' sur : {endpoint}")
+
+        response = session.post(endpoint, json=payload, headers=headers, timeout=30, verify=True)
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if data.get('success'):
+                    return {'success': True, 'message': data.get('message', f'{theme_slug} supprimé')}
+                return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
+            except json.JSONDecodeError:
+                return {'success': False, 'error': 'Réponse non-JSON depuis WordPress'}
+        elif response.status_code == 404:
+            return {'success': False, 'error': '404 - Route delete-theme non disponible (plugin WP à mettre à jour)'}
+        elif response.status_code == 403:
+            return {'success': False, 'error': '403 - Accès refusé (clé invalide)'}
+
+        return {'success': False, 'error': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        return {'success': False, 'error': str(e)[:80]}
+
 def update_core_via_agent(url: str) -> dict:
     """
     Déclenche la mise à jour du core WordPress via l'Agent WeRocket.
@@ -259,6 +318,8 @@ def parse_agent_data(data):
     theme_name = theme.get('name', 'N/A')
     theme_version = theme.get('version', 'N/A')
 
+    themes_list = data.get('themes', [])
+
     # PHP sérialise un tableau associatif vide en JSON `[]`, pas `{}` — sans
     # ce garde-fou, un site sans licence détectée casserait la validation
     # Pydantic (Optional[dict]) côté API.
@@ -316,6 +377,7 @@ def parse_agent_data(data):
         "version_mysql": version_mysql,
         "theme_name": theme_name,
         "theme_version": theme_version,
+        "themes_list": themes_list,
         "licenses": licenses_info,
         "plugins_dict": plugins_dict,
         "tech_info": {"builder": builder, "version": builder_version},
@@ -359,6 +421,7 @@ def refresh_site_in_results(url: str) -> dict:
             entry["updates_count"] = parsed["updates_info"]["count_updates"]
             entry["mises_a_jour"] = updates_list
             entry["methode"] = "Agent"
+            entry["themes"] = parsed["themes_list"]
             updated = True
             break
 
