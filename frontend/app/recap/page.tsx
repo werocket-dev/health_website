@@ -3,8 +3,9 @@
 import axios from "axios";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { LogoutButton } from "@/components/layout/LogoutButton";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = "/api/backend";
 
 type IAFaibleSite = {
   client: string;
@@ -116,7 +117,6 @@ export default function RecapPage() {
   };
 
   const handleBulkUpdate = async (pluginSlug: string) => {
-    if (!API_URL) return;
     const urls = Array.from(selectedSites[pluginSlug] ?? []);
     if (urls.length === 0) return;
 
@@ -124,7 +124,7 @@ export default function RecapPage() {
       const key = `${url}::${pluginSlug}`;
       setUpdateStatus((prev) => ({ ...prev, [key]: "loading" }));
       try {
-        await axios.post(`${API_URL}/api/update-plugin`, { url, plugin_slug: pluginSlug });
+        await axios.post(`${API_URL}/update-plugin`, { url, plugin_slug: pluginSlug });
         setUpdateStatus((prev) => ({ ...prev, [key]: "success" }));
       } catch {
         setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
@@ -133,15 +133,10 @@ export default function RecapPage() {
   };
 
   useEffect(() => {
-    if (!API_URL) {
-      setError("API non configurée.");
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError(null);
     axios
-      .get<RecapData>(`${API_URL}/api/recap`)
+      .get<RecapData>(`${API_URL}/recap`)
       .then(({ data }) => {
         setData(data);
       })
@@ -161,6 +156,7 @@ export default function RecapPage() {
           { label: "Résultats", href: "/" },
           { label: "Récap", href: "/recap" },
         ]}
+        actions={<LogoutButton />}
       />
 
       <div

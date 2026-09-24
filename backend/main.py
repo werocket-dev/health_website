@@ -10,10 +10,11 @@ os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
 import json
 import re
+import secrets
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -43,6 +44,14 @@ if _sentry_dsn:
     )
     print("✅ Sentry activé")
 
+# Clé partagée avec le proxy serveur du frontend (jamais exposée au navigateur) —
+# protège l'API contre un accès direct par quiconque trouve l'URL publique.
+_BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
+
+def require_api_key(x_api_key: str = Header(default="")):
+    if not _BACKEND_API_KEY or not secrets.compare_digest(x_api_key, _BACKEND_API_KEY):
+        raise HTTPException(status_code=401, detail="Clé API manquante ou invalide")
+
 # État de progression de l'audit en cours (partagé entre background task et API)
 _audit_progress: dict = {"status": "idle", "percent": 0, "label": ""}
 
@@ -68,11 +77,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configuration CORS (Pour que ton Next.js puisse parler à ton Python)
+# Configuration CORS — le frontend n'appelle plus ce backend depuis le
+# navigateur (il passe par son propre proxy serveur), donc ceci ne sert
+# plus que de garde-fou pour des appels directs/tests.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # En dev, on autorise tout. En prod, mets l'URL de ton Vercel/Netlify
-    allow_credentials=True,
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -271,7 +281,7 @@ def check_pocketbase():
 async def root():
     return {"message": "🚀 WeRocket Maintenance API is running!"}
 
-@app.post("/api/scan", response_model=ScanResponse)
+@app.post("/api/scan", response_model=ScanResponse, dependencies=[Depends(require_api_key)])
 async def launch_scan(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -303,7 +313,7 @@ async def launch_scan(
         url=scan_request.url if scan_request and scan_request.url else ("BDD" + (f" (limité à {limit})" if limit else ""))
     )
 
-@app.get("/api/results", response_model=PaginatedResults)
+@app.get("/api/results", response_model=PaginatedResults, dependencies=[Depends(require_api_key)])
 async def get_results(
     request: Request,
     page: int = 1,
@@ -367,7 +377,7 @@ async def get_results(
         print(f"❌ Erreur PocketBase : {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/update-plugin", response_model=PluginUpdateResponse)
+@app.post("/api/update-plugin", response_model=PluginUpdateResponse, dependencies=[Depends(require_api_key)])
 async def update_plugin(request: Request, body: PluginUpdateRequest):
     """
     Déclenche la mise à jour d'un plugin spécifique via l'Agent WordPress.
@@ -382,7 +392,7 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
         return PluginUpdateResponse(success=True, message=result.get('message', 'Plugin mis à jour avec succès'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
-@app.post("/api/delete-theme", response_model=ThemeDeleteResponse)
+@app.post("/api/delete-theme", response_model=ThemeDeleteResponse, dependencies=[Depends(require_api_key)])
 async def delete_theme(request: Request, body: ThemeDeleteRequest):
     """
     Supprime un thème WordPress inutilisé via l'Agent.
@@ -397,7 +407,7 @@ async def delete_theme(request: Request, body: ThemeDeleteRequest):
         return ThemeDeleteResponse(success=True, message=result.get('message', 'Thème supprimé avec succès'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
-@app.post("/api/update-core", response_model=CoreUpdateResponse)
+@app.post("/api/update-core", response_model=CoreUpdateResponse, dependencies=[Depends(require_api_key)])
 async def update_core(request: Request, body: CoreUpdateRequest):
     """
     Déclenche la mise à jour du core WordPress via l'Agent WordPress.
@@ -412,11 +422,11 @@ async def update_core(request: Request, body: CoreUpdateRequest):
         return CoreUpdateResponse(success=True, message=result.get('message', 'WordPress mis à jour avec succès'), version=result.get('version'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
-@app.get("/api/progress")
+@app.get("/api/progress", dependencies=[Depends(require_api_key)])
 async def get_progress():
     return {k: v for k, v in _audit_progress.items() if not k.startswith("_")}
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[Depends(require_api_key)])
 async def get_stats():
     """
     Statistiques pour les pastilles de filtres IA/MAJ du dashboard — calculées
@@ -438,7 +448,7 @@ async def get_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/recap")
+@app.get("/api/recap", dependencies=[Depends(require_api_key)])
 async def get_recap():
     """
     Vue d'ensemble de l'audit actuel (sites à IA faible, fréquence des MAJ

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { ReactNode } from "react";
 
 type NavItem = {
   label: string;
@@ -11,9 +12,10 @@ type NavItem = {
 type PageHeaderProps = {
   title: string;
   nav?: NavItem[];
+  actions?: ReactNode;
 };
 
-export function PageHeader({ title, nav }: PageHeaderProps) {
+export function PageHeader({ title, nav, actions }: PageHeaderProps) {
   const pathname = usePathname();
 
   return (
@@ -27,26 +29,29 @@ export function PageHeader({ title, nav }: PageHeaderProps) {
       <h1 className="text-lg font-semibold" style={{ color: "var(--color-ink)" }}>
         {title}
       </h1>
-      {nav && nav.length > 0 && (
-        <nav className="flex items-center gap-1">
-          {nav.map((item) => {
-            const active = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="px-3 py-1.5 rounded-full text-sm font-medium transition-colors"
-                style={{
-                  background: active ? "rgba(23,25,28,0.08)" : "transparent",
-                  color: active ? "var(--color-ink)" : "rgba(23,25,28,0.55)",
-                }}
-              >
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-      )}
+      <div className="flex items-center gap-3">
+        {nav && nav.length > 0 && (
+          <nav className="flex items-center gap-1">
+            {nav.map((item) => {
+              const active = pathname === item.href;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium transition-colors"
+                  style={{
+                    background: active ? "rgba(23,25,28,0.08)" : "transparent",
+                    color: active ? "var(--color-ink)" : "rgba(23,25,28,0.55)",
+                  }}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
+        )}
+        {actions}
+      </div>
     </header>
   );
 }

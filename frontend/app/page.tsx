@@ -3,8 +3,9 @@
 import axios from "axios";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { LogoutButton } from "@/components/layout/LogoutButton";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = "/api/backend";
 
 type IAStatus = "ALERTE" | "ATTENTION" | "OK" | "N/A" | "";
 
@@ -107,7 +108,6 @@ export default function SanteDesSitesPage() {
   const [latestWP, setLatestWP] = useState<string | null>(null);
   const [filterIA, setFilterIA] = useState<IAFilter>("TOUS");
   const [filterMAJ, setFilterMAJ] = useState<MAJFilter>("TOUTES");
-  const [apiUnavailable, setApiUnavailable] = useState<boolean>(false);
   const [updatingPlugins, setUpdatingPlugins] = useState<Record<string, "loading" | "success" | "error">>({});
   const [deletingThemes, setDeletingThemes] = useState<Record<string, "loading" | "success" | "error">>({});
   const [auditProgress, setAuditProgress] = useState<{ status: string; percent: number; label: string } | null>(null);
@@ -147,9 +147,8 @@ export default function SanteDesSitesPage() {
   // Synchronise l'état au chargement — un audit peut déjà tourner depuis un
   // autre onglet, il faut le savoir tout de suite plutôt qu'après un clic.
   useEffect(() => {
-    if (!API_URL) return;
     axios
-      .get(`${API_URL}/api/progress`)
+      .get(`${API_URL}/progress`)
       .then(({ data }) => {
         if (data.status === "running") setAuditProgress(data);
       })
@@ -158,7 +157,7 @@ export default function SanteDesSitesPage() {
 
   const fetchStats = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/stats`);
+      const response = await axios.get(`${API_URL}/stats`);
       setStats(response.data);
     } catch (error) {
       console.error("[audit] Erreur fetch stats:", error);
@@ -167,7 +166,7 @@ export default function SanteDesSitesPage() {
 
   const fetchResults = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/results`, {
+      const response = await axios.get(`${API_URL}/results`, {
         params: {
           page,
           per_page: PER_PAGE,
@@ -205,7 +204,6 @@ export default function SanteDesSitesPage() {
   };
 
   useEffect(() => {
-    if (!API_URL) { setApiUnavailable(true); return; }
     fetchResults(); // chargement immédiat
     const interval = setInterval(fetchResults, 5000);
     return () => clearInterval(interval);
@@ -213,7 +211,6 @@ export default function SanteDesSitesPage() {
   }, [page, search, filterIA, filterMAJ]);
 
   useEffect(() => {
-    if (!API_URL) return;
     fetchStats();
     const interval = setInterval(fetchStats, 5000);
     return () => clearInterval(interval);
@@ -222,12 +219,12 @@ export default function SanteDesSitesPage() {
 
   // Polling progression audit
   useEffect(() => {
-    if (!API_URL || !auditProgress || auditProgress.status === "idle") return;
+    if (!auditProgress || auditProgress.status === "idle") return;
     if (auditProgress.status === "done") return;
 
     const interval = setInterval(async () => {
       try {
-        const { data } = await axios.get(`${API_URL}/api/progress`);
+        const { data } = await axios.get(`${API_URL}/progress`);
         setAuditProgress(data);
         if (data.status === "done") {
           fetchResults();
@@ -245,7 +242,7 @@ export default function SanteDesSitesPage() {
 
     setUpdatingPlugins((prev) => ({ ...prev, [key]: "loading" }));
     try {
-      await axios.post(`${API_URL}/api/update-plugin`, { url: siteUrl, plugin_slug: pluginSlug });
+      await axios.post(`${API_URL}/update-plugin`, { url: siteUrl, plugin_slug: pluginSlug });
       setUpdatingPlugins((prev) => ({ ...prev, [key]: "success" }));
     } catch {
       setUpdatingPlugins((prev) => ({ ...prev, [key]: "error" }));
@@ -257,7 +254,7 @@ export default function SanteDesSitesPage() {
 
     setUpdatingPlugins((prev) => ({ ...prev, [key]: "loading" }));
     try {
-      await axios.post(`${API_URL}/api/update-core`, { url: siteUrl });
+      await axios.post(`${API_URL}/update-core`, { url: siteUrl });
       setUpdatingPlugins((prev) => ({ ...prev, [key]: "success" }));
     } catch {
       setUpdatingPlugins((prev) => ({ ...prev, [key]: "error" }));
@@ -273,7 +270,7 @@ export default function SanteDesSitesPage() {
     const key = `${siteUrl}::theme::${themeSlug}`;
     setDeletingThemes((prev) => ({ ...prev, [key]: "loading" }));
     try {
-      await axios.post(`${API_URL}/api/delete-theme`, { url: siteUrl, theme_slug: themeSlug });
+      await axios.post(`${API_URL}/delete-theme`, { url: siteUrl, theme_slug: themeSlug });
       setDeletingThemes((prev) => ({ ...prev, [key]: "success" }));
     } catch {
       setDeletingThemes((prev) => ({ ...prev, [key]: "error" }));
@@ -283,7 +280,6 @@ export default function SanteDesSitesPage() {
   const auditRunning = launchingAudit || (!!auditProgress && auditProgress.status === "running");
 
   const handleLaunchAudit = async (limit?: number, randomSample?: boolean) => {
-    if (!API_URL) { setAuditError("API non configurée."); return; }
     if (auditRunning) return; // Anti double-clic : un audit tourne déjà
 
     setAuditError(null);
@@ -293,7 +289,7 @@ export default function SanteDesSitesPage() {
     // ce qui poussait à cliquer plusieurs fois.
     setAuditProgress({ status: "running", percent: 0, label: "Lancement de l'audit..." });
     try {
-      await axios.post(`${API_URL}/api/scan`, limit ? { limit, random_sample: !!randomSample } : {});
+      await axios.post(`${API_URL}/scan`, limit ? { limit, random_sample: !!randomSample } : {});
     } catch (error) {
       console.error("[audit] Erreur lancement audit:", error);
       setAuditProgress(null);
@@ -372,6 +368,7 @@ export default function SanteDesSitesPage() {
           { label: "Résultats", href: "/" },
           { label: "Récap", href: "/recap" },
         ]}
+        actions={<LogoutButton />}
       />
 
       <div
@@ -437,19 +434,6 @@ export default function SanteDesSitesPage() {
                 </button>
               </div>
             </div>
-
-            {apiUnavailable && (
-              <div
-                className="mt-4 rounded-xl px-4 py-3 text-sm"
-                style={{
-                  background: "rgba(0,55,62,0.08)",
-                  color: "var(--color-deep-teal)",
-                }}
-              >
-                API non configuree. Ajoute NEXT_PUBLIC_API_URL dans ton .env
-                pour activer les audits.
-              </div>
-            )}
 
             {auditError && (
               <div
