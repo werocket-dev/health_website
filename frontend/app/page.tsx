@@ -14,6 +14,7 @@ type LicenseInfo = {
   status?: string;
   item?: string;
   expires?: string;
+  plugin_version?: string;
 };
 
 type ThemeInfo = {
@@ -820,6 +821,11 @@ export default function SanteDesSitesPage() {
                                     .split("-")
                                     .reverse()
                                     .join("/")}
+                                </span>
+                              )}
+                              {lic.plugin_version && (
+                                <span style={{ color: "rgba(23,25,28,0.4)" }}>
+                                  v{lic.plugin_version}
                                 </span>
                               )}
                             </div>
