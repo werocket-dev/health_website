@@ -2,7 +2,6 @@
 __pycache__
 *.pyc
 screenshots_audit
-*.h5
 .env
 .DS_Store
 results.json

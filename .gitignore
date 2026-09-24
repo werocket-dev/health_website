@@ -11,6 +11,11 @@
 *.keras
 *.pt
 *.onnx
+# Exception : modèle de prod, commité pour être intégré à l'image Docker
+# (Dokploy n'a pas de moyen fiable d'uploader un binaire de cette taille
+# autrement — voir Dockerfile). Remplacé par un simple commit+push au
+# prochain réentraînement.
+!backend/werocket_vision_model.h5
 
 # Python
 scripts_entrainement/data/

@@ -13,12 +13,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Installe Chromium + toutes les dépendances système requises par Playwright
 RUN playwright install --with-deps chromium
 
-COPY main.py audit_engine.py pb_worker.py tf_infer.py tf_worker.py ./
+COPY main.py audit_engine.py pb_worker.py tf_infer.py tf_worker.py werocket_vision_model.h5 ./
 COPY services/ ./services/
 
-# werocket_vision_model.h5 et screenshots_audit/ ne sont PAS copiés dans l'image :
-# à monter en volumes côté Dokploy (modèle remplaçable sans rebuild,
-# screenshots = données de sortie).
+# screenshots_audit/ n'est PAS copié dans l'image : à monter en volume côté
+# Dokploy (données de sortie, pas de code). Le modèle IA (.h5), lui, est
+# intégré à l'image ci-dessus — Dokploy n'a pas de moyen fiable d'uploader
+# un binaire de cette taille (~11 Mo) autrement ; un commit+push suffit à
+# le remplacer au prochain réentraînement (MODEL_PATH reste surchargeable
+# via une variable d'env si un Bind Mount redevient possible un jour).
 
 EXPOSE 8000
 
