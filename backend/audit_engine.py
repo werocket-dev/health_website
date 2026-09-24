@@ -23,6 +23,7 @@ from services.agent_client import (
     update_plugin_via_agent,
     update_core_via_agent,
     delete_theme_via_agent,
+    activate_license_via_agent,
     parse_agent_data,
     refresh_site_in_results,
 )

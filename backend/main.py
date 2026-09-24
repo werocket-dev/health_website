@@ -24,6 +24,7 @@ from audit_engine import (
     update_plugin_via_agent,
     update_core_via_agent,
     delete_theme_via_agent,
+    activate_license_via_agent,
     refresh_site_in_results,
     call_pb_worker,
     RESULTS_FILE,
@@ -115,6 +116,14 @@ class ThemeDeleteRequest(BaseModel):
     theme_slug: str
 
 class ThemeDeleteResponse(BaseModel):
+    success: bool
+    message: str
+
+class LicenseActivateRequest(BaseModel):
+    url: str
+    license_key: str
+
+class LicenseActivateResponse(BaseModel):
     success: bool
     message: str
 
@@ -405,6 +414,21 @@ async def delete_theme(request: Request, body: ThemeDeleteRequest):
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return ThemeDeleteResponse(success=True, message=result.get('message', 'Thème supprimé avec succès'))
+    raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
+
+@app.post("/api/activate-license", response_model=LicenseActivateResponse, dependencies=[Depends(require_api_key)])
+async def activate_license(request: Request, body: LicenseActivateRequest):
+    """
+    Active/revalide la licence Breakdance sur un site via l'Agent.
+    """
+    print(f"[audit] /api/activate-license from {request.client.host} url={body.url}")  # pas de license_key ici non plus
+    import asyncio
+    result = await asyncio.to_thread(activate_license_via_agent, body.url, body.license_key)
+    if result.get('success'):
+        refresh = await asyncio.to_thread(refresh_site_in_results, body.url)
+        if not refresh.get('success'):
+            print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
+        return LicenseActivateResponse(success=True, message=result.get('message', 'Licence activée avec succès'))
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.post("/api/update-core", response_model=CoreUpdateResponse, dependencies=[Depends(require_api_key)])

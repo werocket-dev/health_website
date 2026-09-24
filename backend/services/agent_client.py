@@ -237,6 +237,65 @@ def delete_theme_via_agent(url: str, theme_slug: str) -> dict:
     except Exception as e:
         return {'success': False, 'error': str(e)[:80]}
 
+def activate_license_via_agent(url: str, license_key: str) -> dict:
+    """
+    Active/revalide la licence Breakdance via l'Agent WeRocket WordPress.
+    """
+    if not AGENT_AVAILABLE:
+        return {'success': False, 'error': 'Agent non configuré (variables .env manquantes)'}
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        try:
+            pre_check = session.head(url, timeout=5, allow_redirects=True)
+            final_base_url = pre_check.url.rstrip('/')
+        except Exception:
+            final_base_url = url.rstrip('/')
+
+        timestamp = int(time.time())
+        route = "/werocket/v1/activate-license"
+        message = f"{final_base_url}|{timestamp}|{route}"
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
+
+        payload = {
+            'timestamp': timestamp,
+            'signature': signature,
+            'license_key': license_key,
+        }
+
+        headers = {
+            'X-WeRocket-Key': WEROCKET_AGENT_HEADER_KEY,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        endpoint = f"{final_base_url}/wp-json/werocket/v1/activate-license"
+        print(f"      🔑 Activation licence Breakdance sur : {endpoint}")  # ne PAS logger license_key
+
+        response = session.post(endpoint, json=payload, headers=headers, timeout=30, verify=True)
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if data.get('success'):
+                    return {'success': True, 'message': data.get('message', 'Licence activée'), 'license': data.get('license')}
+                return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
+            except json.JSONDecodeError:
+                return {'success': False, 'error': 'Réponse non-JSON depuis WordPress'}
+        elif response.status_code == 404:
+            return {'success': False, 'error': '404 - Route activate-license non disponible (plugin WP à mettre à jour)'}
+        elif response.status_code == 403:
+            return {'success': False, 'error': '403 - Accès refusé (clé invalide)'}
+
+        return {'success': False, 'error': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        return {'success': False, 'error': str(e)[:80]}
+
 def update_core_via_agent(url: str) -> dict:
     """
     Déclenche la mise à jour du core WordPress via l'Agent WeRocket.
@@ -422,6 +481,7 @@ def refresh_site_in_results(url: str) -> dict:
             entry["mises_a_jour"] = updates_list
             entry["methode"] = "Agent"
             entry["themes"] = parsed["themes_list"]
+            entry["licenses"] = parsed["licenses"]
             updated = True
             break
 
