@@ -33,12 +33,18 @@ type PhpObsoleteSite = {
   php_version: string;
 };
 
+type BreakdanceLicenseSite = {
+  client: string;
+  url: string;
+};
+
 type RecapData = {
   total_sites: number;
   ia_faible: IAFaibleSite[];
   plugin_frequency: PluginFrequency[];
   php_obsolete: PhpObsoleteSite[];
   methode_counts: Record<string, number>;
+  breakdance_licenses_a_verifier: BreakdanceLicenseSite[];
 };
 
 const RISK_LABELS: Record<string, string> = {
@@ -130,6 +136,30 @@ export default function RecapPage() {
         setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
       }
     }
+  };
+
+  const [showLicenseModal, setShowLicenseModal] = useState(false);
+  const [licenseKeyInput, setLicenseKeyInput] = useState("");
+  const [activatingLicenses, setActivatingLicenses] = useState(false);
+
+  const handleActivateLicenses = async () => {
+    const urls = Array.from(selectedSites["breakdance-license"] ?? []);
+    if (urls.length === 0 || !licenseKeyInput.trim()) return;
+
+    setActivatingLicenses(true);
+    for (const url of urls) {
+      const key = `${url}::breakdance-license`;
+      setUpdateStatus((prev) => ({ ...prev, [key]: "loading" }));
+      try {
+        await axios.post(`${API_URL}/activate-license`, { url, license_key: licenseKeyInput.trim() });
+        setUpdateStatus((prev) => ({ ...prev, [key]: "success" }));
+      } catch {
+        setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
+      }
+    }
+    setActivatingLicenses(false);
+    setShowLicenseModal(false);
+    setLicenseKeyInput("");
   };
 
   useEffect(() => {
@@ -368,10 +398,124 @@ export default function RecapPage() {
                   </div>
                 )}
               </Card>
+
+              <Card title={`Licences Breakdance à vérifier — ${data.breakdance_licenses_a_verifier.length}`}>
+                {data.breakdance_licenses_a_verifier.length === 0 ? (
+                  <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                    Aucune licence à vérifier.
+                  </p>
+                ) : (
+                  <>
+                    {(() => {
+                      const selected = selectedSites["breakdance-license"] ?? new Set<string>();
+                      const urls = data.breakdance_licenses_a_verifier.map((s) => s.url);
+                      const allSelected = urls.length > 0 && urls.every((u) => selected.has(u));
+                      return (
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between py-1.5">
+                            <button
+                              onClick={() => toggleAllSites("breakdance-license", urls)}
+                              className="text-xs font-medium cursor-pointer hover:underline"
+                              style={{ color: "var(--color-deep-teal)" }}
+                            >
+                              {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                            </button>
+                            <button
+                              onClick={() => setShowLicenseModal(true)}
+                              disabled={selected.size === 0}
+                              className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                              style={{ background: "var(--color-neon)", color: "var(--color-ink)" }}
+                            >
+                              Activer la licence sur la sélection ({selected.size})
+                            </button>
+                          </div>
+                          {data.breakdance_licenses_a_verifier.map((site) => {
+                            const key = `${site.url}::breakdance-license`;
+                            const status = updateStatus[key];
+                            return (
+                              <label
+                                key={site.url}
+                                className="flex items-center gap-2 text-xs py-1 px-2 rounded cursor-pointer"
+                                style={{ background: "rgba(255,255,255,0.6)" }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(site.url)}
+                                  onChange={() => toggleSite("breakdance-license", site.url)}
+                                />
+                                <span className="flex-1" style={{ color: "var(--color-ink)" }}>
+                                  {site.client}
+                                </span>
+                                {status && (
+                                  <span
+                                    style={{
+                                      color: status === "success" ? "#087A61" : status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
+                                    }}
+                                  >
+                                    {status === "loading" ? "..." : status === "success" ? "✓ OK" : "✗ Erreur"}
+                                  </span>
+                                )}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
+              </Card>
             </>
           )}
         </div>
       </div>
+
+      {showLicenseModal && (
+        <div
+          className="fixed inset-0 flex items-center justify-center z-50"
+          style={{ background: "rgba(23,25,28,0.4)" }}
+          onClick={() => !activatingLicenses && setShowLicenseModal(false)}
+        >
+          <div
+            className="rounded-2xl p-6 w-full max-w-sm space-y-4"
+            style={{ background: "var(--color-white)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold" style={{ color: "var(--color-ink)" }}>
+              Activer la licence Breakdance
+            </h3>
+            <p className="text-xs" style={{ color: "rgba(23,25,28,0.5)" }}>
+              Cette clé sera appliquée à {(selectedSites["breakdance-license"] ?? new Set()).size} site(s) sélectionné(s).
+            </p>
+            <input
+              type="text"
+              autoFocus
+              placeholder="Clé de licence Breakdance"
+              value={licenseKeyInput}
+              onChange={(e) => setLicenseKeyInput(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border text-sm"
+              style={{ borderColor: "rgba(23,25,28,0.15)", color: "var(--color-ink)" }}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowLicenseModal(false)}
+                disabled={activatingLicenses}
+                className="px-3 py-2 rounded-lg text-sm font-medium cursor-pointer disabled:opacity-50"
+                style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)" }}
+              >
+                Annuler
+              </button>
+              <button
+                onClick={handleActivateLicenses}
+                disabled={activatingLicenses || !licenseKeyInput.trim()}
+                className="px-3 py-2 rounded-lg text-sm font-medium cursor-pointer disabled:opacity-50"
+                style={{ background: "var(--color-ink)", color: "var(--color-white)" }}
+              >
+                {activatingLicenses ? "Activation..." : "Activer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

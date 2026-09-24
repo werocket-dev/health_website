@@ -236,12 +236,19 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
         methode = d.get("methode") or "Inconnu"
         methode_counts[methode] = methode_counts.get(methode, 0) + 1
 
+    breakdance_licenses_a_verifier = [
+        {"client": d.get("client"), "url": d.get("url")}
+        for d in data
+        if ((d.get("licenses") or {}).get("breakdance") or {}).get("status") == "a_verifier"
+    ]
+
     return {
         "total_sites": len(data),
         "ia_faible": ia_faible,
         "plugin_frequency": plugin_frequency,
         "php_obsolete": php_obsolete,
         "methode_counts": methode_counts,
+        "breakdance_licenses_a_verifier": breakdance_licenses_a_verifier,
     }
 
 def _compute_stats_from_results(data: list[dict]) -> dict:
