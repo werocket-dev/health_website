@@ -9,6 +9,7 @@ import os
 os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
 import json
+import re
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
@@ -26,6 +27,7 @@ from audit_engine import (
     call_pb_worker,
     RESULTS_FILE,
 )
+from services.pocketbase_client import is_php_obsolete
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -46,6 +48,18 @@ _audit_progress: dict = {"status": "idle", "percent": 0, "label": ""}
 
 def _on_progress(data: dict):
     _audit_progress.update(data)
+
+async def _run_audit_locked(*args, **kwargs):
+    """
+    Empêche deux audits de tourner en même temps (ex. deux onglets ouverts,
+    ou double-clic malgré la désactivation du bouton côté front) — deux
+    run_audit() concurrents se marchent dessus sur results.json et sur
+    l'écriture PocketBase groupée.
+    """
+    try:
+        await run_audit(*args, **kwargs)
+    finally:
+        _audit_progress["_locked"] = False
 
 # Initialisation FastAPI
 app = FastAPI(
@@ -71,6 +85,7 @@ class ScanRequest(BaseModel):
     url: Optional[str] = None # Si absent : audit sur les sites actifs en BDD (voir `limit`)
     client_name: Optional[str] = "Client API"
     limit: Optional[int] = None # Borne le nombre de sites (audit de test), ignoré si `url` est fourni
+    random_sample: Optional[bool] = False # Tire `limit` sites au hasard plutôt que les premiers, ignoré si `url` est fourni
 
 class ScanResponse(BaseModel):
     message: str
@@ -129,6 +144,110 @@ class PaginatedResults(BaseModel):
     total_pages: int
 
 # ============================================================================
+# RÉCAP — calculé depuis results.json (l'audit affiché dans le tableau),
+# jamais depuis tout l'historique PocketBase, pour rester cohérent avec ce
+# que montre l'onglet Résultats.
+# ============================================================================
+
+_RISK_RE = re.compile(r"-\s*(CRITIQUE|ÉLEVÉ|MOYEN|FAIBLE|INCONNU|AUCUN)\s*:")
+_PLUGIN_NAME_RE = re.compile(r"^\S+\s+(.+?)\s+\(")
+
+def _parse_plugin_updates(mises_a_jour: str) -> list[dict]:
+    """Reparse la chaîne 'slug||emoji Nom (v1 → v2) - RISQUE: message, ...'
+    (même format que celui affiché dans le tableau) en entrées structurées."""
+    if not mises_a_jour or mises_a_jour == "Aucune":
+        return []
+    entries = []
+    for chunk in mises_a_jour.split(", "):
+        slug, text = chunk.split("||", 1) if "||" in chunk else ("", chunk)
+        risk_match = _RISK_RE.search(text)
+        name_match = _PLUGIN_NAME_RE.match(text)
+        entries.append({
+            "slug": slug or (name_match.group(1) if name_match else text[:40]),
+            "name": name_match.group(1) if name_match else (slug or text[:40]),
+            "risk": risk_match.group(1) if risk_match else "INCONNU",
+        })
+    return entries
+
+def _compute_recap_from_results(data: list[dict]) -> dict:
+    ia_faible = []
+    for d in data:
+        checks = [
+            ("accueil", d.get("ia_status"), d.get("ia_score")),
+            ("contact", d.get("ia_status_contact"), d.get("ia_score_contact")),
+            ("mobile", d.get("ia_status_mobile"), d.get("ia_score_mobile")),
+        ]
+        faibles = {label: score for label, status, score in checks if status and status != "N/A" and (score or 0) < 70}
+        if faibles:
+            ia_faible.append({"client": d.get("client"), "url": d.get("url"), "scores": faibles})
+    ia_faible.sort(key=lambda s: min(s["scores"].values()))
+
+    plugin_agg: dict[str, dict] = {}
+    for d in data:
+        for p in _parse_plugin_updates(d.get("mises_a_jour") or ""):
+            agg = plugin_agg.setdefault(p["slug"], {"plugin_name": p["name"], "sites": {}, "risk_counts": {}})
+            # dict clé=url plutôt qu'un set : un site ne doit apparaître qu'une
+            # fois par plugin même s'il a plusieurs entrées de MAJ pour lui
+            # (ne devrait pas arriver, mais mieux vaut être robuste)
+            agg["sites"][d.get("url")] = {"client": d.get("client"), "url": d.get("url"), "risk": p["risk"]}
+            agg["risk_counts"][p["risk"]] = agg["risk_counts"].get(p["risk"], 0) + 1
+    plugin_frequency = sorted(
+        [
+            {
+                "plugin_slug": slug,
+                "plugin_name": v["plugin_name"],
+                "sites_count": len(v["sites"]),
+                "risk_counts": v["risk_counts"],
+                "sites": list(v["sites"].values()),
+            }
+            for slug, v in plugin_agg.items()
+        ],
+        key=lambda x: x["sites_count"],
+        reverse=True,
+    )
+
+    php_obsolete = [
+        {"client": d.get("client"), "url": d.get("url"), "php_version": d.get("php_version")}
+        for d in data
+        if is_php_obsolete(d.get("php_version") or "")
+    ]
+
+    methode_counts: dict[str, int] = {}
+    for d in data:
+        methode = d.get("methode") or "Inconnu"
+        methode_counts[methode] = methode_counts.get(methode, 0) + 1
+
+    return {
+        "total_sites": len(data),
+        "ia_faible": ia_faible,
+        "plugin_frequency": plugin_frequency,
+        "php_obsolete": php_obsolete,
+        "methode_counts": methode_counts,
+    }
+
+def _compute_stats_from_results(data: list[dict]) -> dict:
+    """Même forme que get_stats_summary() (PocketBase), mais calculée depuis
+    results.json — pour que les pastilles de filtres IA/MAJ du tableau
+    reflètent le dernier audit affiché, pas tout l'historique du parc."""
+    total_sites = len(data)
+    ia_ok = sum(1 for d in data if d.get("ia_status") == "OK")
+    ia_attention = sum(1 for d in data if d.get("ia_status") == "ATTENTION")
+    ia_alerte = sum(1 for d in data if d.get("ia_status") == "ALERTE")
+    total_updates = sum(d.get("updates_count") or 0 for d in data)
+    scans_agent = sum(1 for d in data if d.get("methode") == "Agent")
+
+    avec_maj = sum(1 for d in data if (d.get("updates_count") or 0) > 0)
+    critiques = sum(1 for d in data if "🔴" in (d.get("mises_a_jour") or ""))
+    a_jour = sum(1 for d in data if (d.get("updates_count") or 0) == 0)
+
+    return {
+        "total_sites": total_sites,
+        "ia_status": {"ok": ia_ok, "attention": ia_attention, "alerte": ia_alerte},
+        "maj_status": {"toutes": total_sites, "avec_maj": avec_maj, "critiques": critiques, "a_jour": a_jour},
+        "kpis": {"updates_pending": total_updates, "agent_coverage": scans_agent},
+    }
+
+# ============================================================================
 # ROUTES API
 # ============================================================================
 
@@ -162,15 +281,21 @@ async def launch_scan(
     Lance l'audit en tâche de fond (ne bloque pas l'interface)
     """
     print(f"[audit] /api/scan from {request.client.host} origin={request.headers.get('origin')} limit={scan_request.limit if scan_request else None}")
+
+    if _audit_progress.get("_locked"):
+        raise HTTPException(status_code=409, detail="Un audit est déjà en cours — attends qu'il se termine.")
+
     limit = None
+    random_sample = False
     if scan_request and scan_request.url:
         sites_list = [{"Client": scan_request.client_name, "URL": scan_request.url}]
     else:
         sites_list = None  # Le moteur lira les sites actifs depuis PocketBase
         limit = scan_request.limit if scan_request else None
+        random_sample = bool(scan_request and scan_request.random_sample)
 
-    _audit_progress.update({"status": "running", "percent": 0, "label": "Démarrage de l'audit..."})
-    background_tasks.add_task(run_audit, sites_list, _on_progress, limit)
+    _audit_progress.update({"status": "running", "percent": 0, "label": "Démarrage de l'audit...", "_locked": True})
+    background_tasks.add_task(_run_audit_locked, sites_list, _on_progress, limit, random_sample)
 
     return ScanResponse(
         message="Audit lancé en arrière-plan 🚀",
@@ -232,7 +357,9 @@ async def get_results(
     # Fallback : PocketBase (pagination + filtres natifs, chaque projet porte
     # déjà son dernier état — pas besoin de dédoublonnage)
     try:
-        return call_pb_worker(
+        import asyncio
+        return await asyncio.to_thread(
+            call_pb_worker,
             "get_results_summary",
             {"page": page, "per_page": per_page, "search": search, "ia_status": ia_status, "maj": maj},
         )
@@ -287,15 +414,50 @@ async def update_core(request: Request, body: CoreUpdateRequest):
 
 @app.get("/api/progress")
 async def get_progress():
-    return _audit_progress
+    return {k: v for k, v in _audit_progress.items() if not k.startswith("_")}
 
 @app.get("/api/stats")
 async def get_stats():
     """
-    Statistiques globales pour les Widgets du Dashboard
+    Statistiques pour les pastilles de filtres IA/MAJ du dashboard — calculées
+    depuis results.json (comme /api/results et /api/recap), pour rester
+    cohérentes avec le dernier audit affiché plutôt qu'avec tout l'historique
+    PocketBase. Fallback PocketBase uniquement si aucun audit n'a encore été lancé.
     """
+    if os.path.exists(RESULTS_FILE):
+        try:
+            with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return _compute_stats_from_results(data)
+        except Exception as e:
+            print(f"⚠️  Erreur lecture results.json pour /api/stats: {e}")
+
     try:
-        return call_pb_worker("get_stats_summary")
+        import asyncio
+        return await asyncio.to_thread(call_pb_worker, "get_stats_summary")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/recap")
+async def get_recap():
+    """
+    Vue d'ensemble de l'audit actuel (sites à IA faible, fréquence des MAJ
+    par plugin, PHP obsolète, répartition Agent/Scraping) — calculée depuis
+    results.json, exactement comme /api/results, pour rester cohérente avec
+    ce qui est affiché dans le tableau. Fallback PocketBase (vue du parc
+    entier) uniquement si aucun audit n'a encore été lancé.
+    """
+    if os.path.exists(RESULTS_FILE):
+        try:
+            with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return _compute_recap_from_results(data)
+        except Exception as e:
+            print(f"⚠️  Erreur lecture results.json pour /api/recap: {e}")
+
+    try:
+        import asyncio
+        return await asyncio.to_thread(call_pb_worker, "get_recap_summary", timeout=60)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

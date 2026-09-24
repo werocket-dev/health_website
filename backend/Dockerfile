@@ -13,10 +13,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Installe Chromium + toutes les dépendances système requises par Playwright
 RUN playwright install --with-deps chromium
 
-COPY main.py audit_engine.py tf_infer.py tf_worker.py ./
+COPY main.py audit_engine.py pb_worker.py tf_infer.py tf_worker.py ./
+COPY services/ ./services/
 
 # werocket_vision_model.h5 et screenshots_audit/ ne sont PAS copiés dans l'image :
-# ils sont montés en volumes par docker-compose.yml (modèle remplaçable sans rebuild,
+# à monter en volumes côté Dokploy (modèle remplaçable sans rebuild,
 # screenshots = données de sortie).
 
 EXPOSE 8000

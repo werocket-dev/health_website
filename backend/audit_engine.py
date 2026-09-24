@@ -108,7 +108,7 @@ def predict_visual(img_path):
 
 # --- COEUR DU SCANNER ---
 
-async def run_audit(sites_list=None, progress_callback=None, limit=None):
+async def run_audit(sites_list=None, progress_callback=None, limit=None, random_sample=False):
     def _progress(percent: int, label: str, status: str = "running"):
         if progress_callback:
             progress_callback({"status": status, "percent": percent, "label": label})
@@ -122,14 +122,20 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None):
         limit: Borne le nombre de sites récupérés depuis PocketBase quand
                sites_list est None (utile pour un audit de test) — sans
                effet si sites_list est fourni explicitement.
+        random_sample: Si True (et sites_list est None), tire `limit` sites
+               au hasard plutôt que de toujours prendre les mêmes premiers
+               (utile pour un audit de test représentatif du parc entier).
 
     Returns:
         dict: Statistiques de l'audit avec détails par site
     """
     # 1. Récupération des sites à auditer
     if sites_list is None:
-        # Mode par défaut : sites actifs depuis PocketBase (tous, ou `limit` premiers)
-        sites = call_pb_worker("get_active_projects", {"limit": limit} if limit else {})
+        if random_sample:
+            sites = call_pb_worker("get_random_active_projects", {"limit": limit} if limit else {})
+        else:
+            # Mode par défaut : sites actifs depuis PocketBase (tous, ou `limit` premiers)
+            sites = call_pb_worker("get_active_projects", {"limit": limit} if limit else {})
     else:
         # Mode API : utilise la liste fournie en paramètre
         sites = sites_list

@@ -41,6 +41,8 @@ def main():
         )
     elif command == "get_stats_summary":
         result = pbc.get_stats_summary()
+    elif command == "get_recap_summary":
+        result = pbc.get_recap_summary()
     elif command == "update_project_status":
         pbc.update_project_status(args["project_id"], args["latest"])
         result = {"success": True}

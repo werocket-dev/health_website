@@ -102,6 +102,7 @@ const PER_PAGE = 25;
 
 export default function SanteDesSitesPage() {
   const [results, setResults] = useState<HealthResult[]>([]);
+  const [resultsLoading, setResultsLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [latestWP, setLatestWP] = useState<string | null>(null);
   const [filterIA, setFilterIA] = useState<IAFilter>("TOUS");
@@ -110,6 +111,8 @@ export default function SanteDesSitesPage() {
   const [updatingPlugins, setUpdatingPlugins] = useState<Record<string, "loading" | "success" | "error">>({});
   const [deletingThemes, setDeletingThemes] = useState<Record<string, "loading" | "success" | "error">>({});
   const [auditProgress, setAuditProgress] = useState<{ status: string; percent: number; label: string } | null>(null);
+  const [launchingAudit, setLaunchingAudit] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
@@ -138,6 +141,18 @@ export default function SanteDesSitesPage() {
     fetch("https://api.wordpress.org/core/version-check/1.7/")
       .then((r) => r.json())
       .then((d) => setLatestWP(d?.offers?.[0]?.version ?? null))
+      .catch(() => {});
+  }, []);
+
+  // Synchronise l'état au chargement — un audit peut déjà tourner depuis un
+  // autre onglet, il faut le savoir tout de suite plutôt qu'après un clic.
+  useEffect(() => {
+    if (!API_URL) return;
+    axios
+      .get(`${API_URL}/api/progress`)
+      .then(({ data }) => {
+        if (data.status === "running") setAuditProgress(data);
+      })
       .catch(() => {});
   }, []);
 
@@ -184,6 +199,8 @@ export default function SanteDesSitesPage() {
       setResults(sorted);
     } catch (error) {
       console.error("[audit] Erreur fetch results:", error);
+    } finally {
+      setResultsLoading(false);
     }
   };
 
@@ -263,14 +280,31 @@ export default function SanteDesSitesPage() {
     }
   };
 
-  const handleLaunchAudit = async (limit?: number) => {
-    if (!API_URL) { alert("API non configurée."); return; }
+  const auditRunning = launchingAudit || (!!auditProgress && auditProgress.status === "running");
+
+  const handleLaunchAudit = async (limit?: number, randomSample?: boolean) => {
+    if (!API_URL) { setAuditError("API non configurée."); return; }
+    if (auditRunning) return; // Anti double-clic : un audit tourne déjà
+
+    setAuditError(null);
+    setLaunchingAudit(true);
+    // Retour visuel immédiat au clic, avant même la réponse du serveur —
+    // sans ça rien ne bougeait tant que la requête n'avait pas répondu,
+    // ce qui poussait à cliquer plusieurs fois.
+    setAuditProgress({ status: "running", percent: 0, label: "Lancement de l'audit..." });
     try {
-      await axios.post(`${API_URL}/api/scan`, limit ? { limit } : {});
-      setAuditProgress({ status: "running", percent: 0, label: "Démarrage de l'audit..." });
+      await axios.post(`${API_URL}/api/scan`, limit ? { limit, random_sample: !!randomSample } : {});
     } catch (error) {
       console.error("[audit] Erreur lancement audit:", error);
-      alert("Erreur lors du lancement de l'audit");
+      setAuditProgress(null);
+      const isConflict = axios.isAxiosError(error) && error.response?.status === 409;
+      setAuditError(
+        isConflict
+          ? "Un audit est déjà en cours (peut-être depuis un autre onglet) — attends qu'il se termine."
+          : "Erreur lors du lancement de l'audit (le serveur ne répond pas ?)"
+      );
+    } finally {
+      setLaunchingAudit(false);
     }
   };
 
@@ -331,8 +365,14 @@ export default function SanteDesSitesPage() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <PageHeader title="Sante des sites" />
+    <div className="flex flex-col h-screen">
+      <PageHeader
+        title="Sante des sites"
+        nav={[
+          { label: "Résultats", href: "/" },
+          { label: "Récap", href: "/recap" },
+        ]}
+      />
 
       <div
         className="flex-1 p-8"
@@ -373,25 +413,27 @@ export default function SanteDesSitesPage() {
               </div>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => handleLaunchAudit(75)}
-                  className="px-4 py-3 rounded-xl font-medium text-sm transition-colors cursor-pointer"
+                  onClick={() => handleLaunchAudit(10, true)}
+                  disabled={auditRunning}
+                  className="px-4 py-3 rounded-xl font-medium text-sm transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{
                     background: "rgba(23,25,28,0.06)",
                     color: "var(--color-ink)",
                   }}
-                  title="Lance l'audit sur seulement 20 sites, pour tester"
+                  title="Lance l'audit sur 10 sites tirés au hasard dans le parc, pour tester"
                 >
-                  Audit test (75 sites)
+                  {auditRunning ? "Audit en cours..." : "Audit test (10 sites aléatoires)"}
                 </button>
                 <button
                   onClick={() => handleLaunchAudit()}
-                  className="px-6 py-3 rounded-xl font-semibold transition-transform shadow-lg hover:shadow-xl cursor-pointer"
+                  disabled={auditRunning}
+                  className="px-6 py-3 rounded-xl font-semibold transition-transform shadow-lg hover:shadow-xl cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
                   style={{
                     background: "var(--color-neon)",
                     color: "var(--color-ink)",
                   }}
                 >
-                  Lancer l&apos;audit global
+                  {auditRunning ? "Audit en cours..." : "Lancer l'audit global"}
                 </button>
               </div>
             </div>
@@ -406,6 +448,24 @@ export default function SanteDesSitesPage() {
               >
                 API non configuree. Ajoute NEXT_PUBLIC_API_URL dans ton .env
                 pour activer les audits.
+              </div>
+            )}
+
+            {auditError && (
+              <div
+                className="mt-4 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3"
+                style={{
+                  background: "rgba(220,38,38,0.08)",
+                  color: "#dc2626",
+                }}
+              >
+                <span>{auditError}</span>
+                <button
+                  onClick={() => setAuditError(null)}
+                  className="shrink-0 cursor-pointer font-medium"
+                >
+                  Fermer
+                </button>
               </div>
             )}
           </div>
@@ -549,7 +609,14 @@ export default function SanteDesSitesPage() {
               <div className="flex-3 min-w-0">Versions</div>
             </div>
 
-            {totalResults === 0 ? (
+            {resultsLoading ? (
+              <div
+                className="px-6 py-12 text-center"
+                style={{ color: "rgba(23,25,28,0.4)" }}
+              >
+                <p>Chargement...</p>
+              </div>
+            ) : totalResults === 0 ? (
               <div
                 className="px-6 py-12 text-center"
                 style={{ color: "rgba(23,25,28,0.4)" }}

@@ -81,9 +81,9 @@ async def sabotaging_bot():
         browser = await p.chromium.launch(headless=True)
 
         for site in sites:
-            url = clean_url(site['url'])
-            name = site['client_name'].replace(" ", "_").replace("/", "-")
-            print(f"👉 {site['client_name']}...")
+            url = clean_url(site['site_url'])
+            name = site['project_name'].replace(" ", "_").replace("/", "-")
+            print(f"👉 {site['project_name']}...")
 
             try:
                 result = urlparse(url)

@@ -140,6 +140,106 @@ def get_stats_summary() -> dict:
     }
 
 
+_PHP_OBSOLETE_THRESHOLD = (8, 1)  # PHP < 8.1 : versions EOL ou proches de l'EOL
+
+
+def is_php_obsolete(version: str) -> bool:
+    """`version` du type '8.3.33' ou '7.4.1' — compare seulement major.minor."""
+    if not version:
+        return False
+    parts = version.split(".")
+    if len(parts) < 2:
+        return False
+    try:
+        major, minor = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    return (major, minor) < _PHP_OBSOLETE_THRESHOLD
+
+
+def get_recap_summary() -> dict:
+    """
+    Fallback de /api/recap quand results.json n'existe pas encore (aucun
+    audit lancé) — vue construite depuis tout le parc actif PocketBase à
+    la place. Même forme que le calcul basé sur results.json.
+    """
+    pb = get_client()
+    projects = pb.collection("projects").get_full_list(
+        query_params={"filter": pb.filter("is_active = {:a}", {"a": True})}
+    )
+
+    audited = [p for p in projects if getattr(p, "last_audit_at", None)]
+
+    # 1. Sites avec un score IA < 70% (accueil, contact ou mobile — en excluant
+    # les diagnostics "N/A", ex. pas de page contact trouvée, pour ne pas les
+    # confondre avec un vrai score bas)
+    ia_faible = []
+    for p in audited:
+        checks = [
+            ("accueil", p.latest_ia_status, p.latest_ia_score),
+            ("contact", p.latest_ia_status_contact, p.latest_ia_score_contact),
+            ("mobile", p.latest_ia_status_mobile, p.latest_ia_score_mobile),
+        ]
+        faibles = {label: score for label, status, score in checks if status and status != "N/A" and (score or 0) < 70}
+        if faibles:
+            ia_faible.append({"client": p.client_name, "url": p.url, "scores": faibles})
+    ia_faible.sort(key=lambda s: min(s["scores"].values()))
+
+    # 2. Fréquence des mises à jour par plugin, avec répartition par sévérité
+    # et la liste des sites concernés (pour la sélection manuelle de MAJ groupée)
+    project_lookup = {p.id: {"client": p.client_name, "url": p.url} for p in projects}
+    plugin_records = pb.collection("site_plugins").get_full_list(
+        query_params={"filter": pb.filter("update_available = {:u}", {"u": True})}
+    )
+    plugin_agg: dict[str, dict] = {}
+    for rec in plugin_records:
+        slug = rec.plugin_slug or rec.plugin_name
+        agg = plugin_agg.setdefault(slug, {"plugin_name": rec.plugin_name, "sites": {}, "risk_counts": {}})
+        risk = rec.risk_level or "INCONNU"
+        project_info = project_lookup.get(rec.project, {})
+        agg["sites"][rec.project] = {
+            "client": project_info.get("client", "?"),
+            "url": project_info.get("url", ""),
+            "risk": risk,
+        }
+        agg["risk_counts"][risk] = agg["risk_counts"].get(risk, 0) + 1
+    plugin_frequency = sorted(
+        [
+            {
+                "plugin_slug": slug,
+                "plugin_name": v["plugin_name"],
+                "sites_count": len(v["sites"]),
+                "risk_counts": v["risk_counts"],
+                "sites": list(v["sites"].values()),
+            }
+            for slug, v in plugin_agg.items()
+        ],
+        key=lambda x: x["sites_count"],
+        reverse=True,
+    )
+
+    # 3. Sites sur une version PHP obsolète (< 8.1)
+    php_obsolete = [
+        {"client": p.client_name, "url": p.url, "php_version": p.latest_php_version}
+        for p in audited
+        if is_php_obsolete(p.latest_php_version)
+    ]
+
+    # 5. Disponibilité de l'Agent WordPress (Agent vs fallback Scraping)
+    methode_counts: dict[str, int] = {}
+    for p in audited:
+        methode = p.latest_methode_scan or "Inconnu"
+        methode_counts[methode] = methode_counts.get(methode, 0) + 1
+
+    return {
+        "total_sites": len(audited),
+        "ia_faible": ia_faible,
+        "plugin_frequency": plugin_frequency,
+        "php_obsolete": php_obsolete,
+        "methode_counts": methode_counts,
+    }
+
+
 def get_active_projects(limit: int | None = None) -> list[dict]:
     """
     Sites actifs à auditer (remplace le SELECT * FROM projects WHERE is_active).
@@ -207,7 +307,9 @@ def get_random_active_projects(limit: int = 350) -> list[dict]:
     pb = get_client()
     records = pb.collection("projects").get_full_list(query_params={"filter": "is_active = true"})
     sample = random.sample(records, min(limit, len(records)))
-    return [{"client_name": r.client_name, "url": r.url} for r in sample]
+    # Même forme que get_active_projects() (project_id notamment, sans quoi
+    # l'écriture PocketBase de fin d'audit est silencieusement ignorée).
+    return [{"project_id": r.id, "project_name": r.client_name, "site_url": r.url} for r in sample]
 
 
 def update_project_status(project_id: str, latest: dict) -> dict:
