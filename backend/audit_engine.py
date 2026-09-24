@@ -37,7 +37,10 @@ SCREENSHOT_DIR = "screenshots_audit"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 _TF_INFER_SCRIPT = os.path.join(os.path.dirname(__file__), "tf_infer.py")
-_MODEL_PATH = os.path.join(os.path.dirname(__file__), "werocket_vision_model.h5")
+# Configurable via MODEL_PATH : en déploiement, le modèle est déposé sur un
+# Bind Mount séparé du code (pour le remplacer sans reconstruire l'image) ;
+# en local, il reste par défaut à côté des autres fichiers du backend.
+_MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(os.path.dirname(__file__), "werocket_vision_model.h5"))
 _PB_WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "pb_worker.py")
 
 def call_pb_worker(command: str, args: dict | None = None, timeout: int = 30):
