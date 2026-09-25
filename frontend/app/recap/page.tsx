@@ -38,6 +38,12 @@ type BreakdanceLicenseSite = {
   url: string;
 };
 
+type TooManyThemesSite = {
+  client: string;
+  url: string;
+  themes_count: number;
+};
+
 type RecapData = {
   total_sites: number;
   ia_faible: IAFaibleSite[];
@@ -45,6 +51,8 @@ type RecapData = {
   php_obsolete: PhpObsoleteSite[];
   methode_counts: Record<string, number>;
   breakdance_licenses_a_verifier: BreakdanceLicenseSite[];
+  sites_trop_de_themes: TooManyThemesSite[];
+  last_audit_finished_at: string | null;
 };
 
 const RISK_LABELS: Record<string, string> = {
@@ -69,6 +77,15 @@ function riskColor(risk: string): { bg: string; color: string } {
     default:
       return { bg: "rgba(23,25,28,0.06)", color: "rgba(23,25,28,0.55)" };
   }
+}
+
+function formatLastAudit(finishedAt: string | null): string {
+  if (!finishedAt) return "aucun audit pour l'instant";
+  // "YYYY-MM-DD HH:MM:SS" écrit en UTC côté backend — on le parse comme tel
+  // pour afficher l'heure locale du navigateur, pas l'heure serveur brute.
+  const date = new Date(finishedAt.replace(" ", "T") + "Z");
+  if (Number.isNaN(date.getTime())) return "aucun audit pour l'instant";
+  return date.toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" });
 }
 
 function scoreLabel(key: string): string {
@@ -213,6 +230,9 @@ export default function RecapPage() {
           {data && (
             <>
               <Card title="Dernier audit">
+                <p className="text-xs mb-3" style={{ color: "rgba(23,25,28,0.5)" }}>
+                  Terminé le {formatLastAudit(data.last_audit_finished_at)}
+                </p>
                 <div className="flex gap-8">
                   <div>
                     <p className="text-3xl font-semibold" style={{ color: "var(--color-ink)" }}>
@@ -393,6 +413,35 @@ export default function RecapPage() {
                           {site.client}
                         </a>
                         <span style={{ color: "#dc2626" }}>PHP {site.php_version}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              <Card title={`Sites avec plus de 3 thèmes WordPress — ${data.sites_trop_de_themes.length}`}>
+                {data.sites_trop_de_themes.length === 0 ? (
+                  <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                    Aucun site avec un excès de thèmes.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {data.sites_trop_de_themes.map((site) => (
+                      <div
+                        key={site.url}
+                        className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
+                        style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.04)" }}
+                      >
+                        <a
+                          href={site.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium hover:underline"
+                          style={{ color: "var(--color-deep-teal)" }}
+                        >
+                          {site.client}
+                        </a>
+                        <span style={{ color: "#d97706" }}>{site.themes_count} thèmes installés</span>
                       </div>
                     ))}
                   </div>

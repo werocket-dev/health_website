@@ -246,6 +246,9 @@ def get_recap_summary() -> dict:
         "php_obsolete": php_obsolete,
         "methode_counts": methode_counts,
         "breakdance_licenses_a_verifier": breakdance_licenses_a_verifier,
+        # Pas de données de thèmes stockées dans PocketBase (uniquement dans
+        # results.json) — liste vide pour garder la même forme que l'autre calcul.
+        "sites_trop_de_themes": [],
     }
 
 

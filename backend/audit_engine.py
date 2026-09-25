@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright
 import json
 from dotenv import load_dotenv
 
-from services.config import RESULTS_FILE
+from services.config import RESULTS_FILE, LAST_AUDIT_FILE
 from services.agent_client import (
     connect_to_agent,
     update_plugin_via_agent,
@@ -559,6 +559,14 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
             print(f"✅ Résultats sauvegardés dans {RESULTS_FILE} ({len(json_results)} sites)")
         except Exception as e:
             print(f"⚠️  Erreur écriture results.json: {e}")
+
+        # Horodatage de fin, pour l'affichage "dernier audit" du récap — fichier
+        # séparé plutôt qu'un champ dans results.json, pour ne pas changer sa forme.
+        try:
+            with open(LAST_AUDIT_FILE, "w", encoding="utf-8") as f:
+                json.dump({"finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}, f)
+        except Exception as e:
+            print(f"⚠️  Erreur écriture last_audit.json: {e}")
 
     # ─── Rapport final ────────────────────────────────────────────────────────
     print("\n" + "="*80)

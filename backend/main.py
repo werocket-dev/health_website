@@ -28,6 +28,7 @@ from audit_engine import (
     refresh_site_in_results,
     call_pb_worker,
     RESULTS_FILE,
+    LAST_AUDIT_FILE,
 )
 from services.pocketbase_client import is_php_obsolete
 
@@ -245,6 +246,19 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
         if lic and lic.get("valid") is not True
     ]
 
+    # Sites accumulant des thèmes WordPress inutilisés (> 3) — candidats pour
+    # la fonctionnalité de suppression de thèmes déjà en place.
+    sites_trop_de_themes = sorted(
+        (
+            {"client": d.get("client"), "url": d.get("url"), "themes_count": len(themes)}
+            for d in data
+            for themes in [d.get("themes") or []]
+            if len(themes) > 3
+        ),
+        key=lambda s: s["themes_count"],
+        reverse=True,
+    )
+
     return {
         "total_sites": len(data),
         "ia_faible": ia_faible,
@@ -252,6 +266,7 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
         "php_obsolete": php_obsolete,
         "methode_counts": methode_counts,
         "breakdance_licenses_a_verifier": breakdance_licenses_a_verifier,
+        "sites_trop_de_themes": sites_trop_de_themes,
     }
 
 def _compute_stats_from_results(data: list[dict]) -> dict:
@@ -482,6 +497,17 @@ async def get_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _read_last_audit_finished_at() -> Optional[str]:
+    """Horodatage (UTC) de fin du dernier audit, écrit par run_audit() à côté
+    de results.json — None si aucun audit n'a encore tourné."""
+    if not os.path.exists(LAST_AUDIT_FILE):
+        return None
+    try:
+        with open(LAST_AUDIT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("finished_at")
+    except Exception:
+        return None
+
 @app.get("/api/recap", dependencies=[Depends(require_api_key)])
 async def get_recap():
     """
@@ -495,13 +521,17 @@ async def get_recap():
         try:
             with open(RESULTS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return _compute_recap_from_results(data)
+            recap = _compute_recap_from_results(data)
+            recap["last_audit_finished_at"] = _read_last_audit_finished_at()
+            return recap
         except Exception as e:
             print(f"⚠️  Erreur lecture results.json pour /api/recap: {e}")
 
     try:
         import asyncio
-        return await asyncio.to_thread(call_pb_worker, "get_recap_summary", timeout=60)
+        recap = await asyncio.to_thread(call_pb_worker, "get_recap_summary", timeout=60)
+        recap["last_audit_finished_at"] = _read_last_audit_finished_at()
+        return recap
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

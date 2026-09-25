@@ -5,3 +5,4 @@ screenshots_audit
 .env
 .DS_Store
 results.json
+last_audit.json
