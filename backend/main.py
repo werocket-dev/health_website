@@ -250,7 +250,7 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
     # la fonctionnalité de suppression de thèmes déjà en place.
     sites_trop_de_themes = sorted(
         (
-            {"client": d.get("client"), "url": d.get("url"), "themes_count": len(themes)}
+            {"client": d.get("client"), "url": d.get("url"), "themes_count": len(themes), "themes": themes}
             for d in data
             for themes in [d.get("themes") or []]
             if len(themes) > 3

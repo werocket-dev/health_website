@@ -38,10 +38,19 @@ type BreakdanceLicenseSite = {
   url: string;
 };
 
+type ThemeInfo = {
+  slug: string;
+  name: string;
+  version: string;
+  is_active: boolean;
+  is_parent_of_active: boolean;
+};
+
 type TooManyThemesSite = {
   client: string;
   url: string;
   themes_count: number;
+  themes: ThemeInfo[];
 };
 
 type RecapData = {
@@ -119,8 +128,25 @@ export default function RecapPage() {
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [expandedPlugin, setExpandedPlugin] = useState<string | null>(null);
+  const [expandedThemesSite, setExpandedThemesSite] = useState<string | null>(null);
   const [selectedSites, setSelectedSites] = useState<Record<string, Set<string>>>({});
   const [updateStatus, setUpdateStatus] = useState<Record<string, "loading" | "success" | "error">>({});
+
+  const handleDeleteTheme = async (siteUrl: string, themeSlug: string, themeName: string) => {
+    const confirmed = window.confirm(
+      `Supprimer définitivement le thème "${themeName}" sur ce site ? Cette action est irréversible.`
+    );
+    if (!confirmed) return;
+
+    const key = `${siteUrl}::theme::${themeSlug}`;
+    setUpdateStatus((prev) => ({ ...prev, [key]: "loading" }));
+    try {
+      await axios.post(`${API_URL}/delete-theme`, { url: siteUrl, theme_slug: themeSlug });
+      setUpdateStatus((prev) => ({ ...prev, [key]: "success" }));
+    } catch {
+      setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
+    }
+  };
 
   const toggleSite = (pluginSlug: string, url: string) => {
     setSelectedSites((prev) => {
@@ -426,24 +452,73 @@ export default function RecapPage() {
                   </p>
                 ) : (
                   <div className="space-y-1.5">
-                    {data.sites_trop_de_themes.map((site) => (
-                      <div
-                        key={site.url}
-                        className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
-                        style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.04)" }}
-                      >
-                        <a
-                          href={site.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium hover:underline"
-                          style={{ color: "var(--color-deep-teal)" }}
-                        >
-                          {site.client}
-                        </a>
-                        <span style={{ color: "#d97706" }}>{site.themes_count} thèmes installés</span>
-                      </div>
-                    ))}
+                    {data.sites_trop_de_themes.map((site) => {
+                      const isExpanded = expandedThemesSite === site.url;
+                      return (
+                        <div key={site.url} className="rounded overflow-hidden" style={{ background: "rgba(23,25,28,0.02)" }}>
+                          <div
+                            className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
+                            style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.04)" }}
+                          >
+                            <a
+                              href={site.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-medium hover:underline"
+                              style={{ color: "var(--color-deep-teal)" }}
+                            >
+                              {site.client}
+                            </a>
+                            <button
+                              onClick={() => setExpandedThemesSite(isExpanded ? null : site.url)}
+                              className="flex items-center gap-2 cursor-pointer"
+                              style={{ color: "#d97706" }}
+                            >
+                              {site.themes_count} thèmes installés
+                              <span style={{ color: "rgba(23,25,28,0.4)" }}>{isExpanded ? "▲" : "▼"}</span>
+                            </button>
+                          </div>
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-2 space-y-1">
+                              {site.themes.map((theme) => {
+                                const key = `${site.url}::theme::${theme.slug}`;
+                                const state = updateStatus[key];
+                                const canDelete = !theme.is_active && !theme.is_parent_of_active;
+                                return (
+                                  <div
+                                    key={key}
+                                    className="flex items-center justify-between text-xs py-1.5 px-3 border-l-4 rounded-r"
+                                    style={{
+                                      color: "rgba(23,25,28,0.8)",
+                                      borderColor: theme.is_active ? "#10b981" : "rgba(23,25,28,0.15)",
+                                      background: theme.is_active ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.6)",
+                                    }}
+                                  >
+                                    <span className="flex-1 mr-3">
+                                      {theme.name} ({theme.version}){theme.is_active && " — actif"}
+                                      {theme.is_parent_of_active && " — parent du thème actif"}
+                                    </span>
+                                    {canDelete && (
+                                      <button
+                                        onClick={() => handleDeleteTheme(site.url, theme.slug, theme.name)}
+                                        disabled={!!state}
+                                        className="shrink-0 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                                        style={{
+                                          background: state === "success" ? "rgba(0,226,158,0.15)" : "rgba(220,38,38,0.08)",
+                                          color: state === "success" ? "#087A61" : "#dc2626",
+                                        }}
+                                      >
+                                        {state === "loading" ? "..." : state === "success" ? "✓ Supprimé" : state === "error" ? "✗ Erreur" : "Supprimer"}
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </Card>
