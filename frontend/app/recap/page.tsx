@@ -36,6 +36,7 @@ type PhpObsoleteSite = {
 type BreakdanceLicenseSite = {
   client: string;
   url: string;
+  valid: boolean | null;
 };
 
 type ThemeInfo = {
@@ -569,6 +570,9 @@ export default function RecapPage() {
                                 />
                                 <span className="flex-1" style={{ color: "var(--color-ink)" }}>
                                   {site.client}
+                                </span>
+                                <span style={{ color: site.valid === false ? "#dc2626" : "rgba(23,25,28,0.5)" }}>
+                                  {site.valid === false ? "✗ Inactive" : "⚠ À vérifier"}
                                 </span>
                                 {status && (
                                   <span

@@ -240,7 +240,7 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
     # Licences Breakdance jamais vérifiées (status "a_verifier") OU explicitement
     # invalides/désactivées (valid=False) — pas juste les jamais-contrôlées.
     breakdance_licenses_a_verifier = [
-        {"client": d.get("client"), "url": d.get("url")}
+        {"client": d.get("client"), "url": d.get("url"), "valid": lic.get("valid")}
         for d in data
         for lic in [(d.get("licenses") or {}).get("breakdance")]
         if lic and lic.get("valid") is not True

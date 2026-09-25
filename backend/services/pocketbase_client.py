@@ -233,7 +233,7 @@ def get_recap_summary() -> dict:
 
     # 6. Licences Breakdance jamais vérifiées OU explicitement invalides/désactivées
     breakdance_licenses_a_verifier = [
-        {"client": p.client_name, "url": p.url}
+        {"client": p.client_name, "url": p.url, "valid": lic.get("valid")}
         for p in audited
         for lic in [(p.latest_licenses or {}).get("breakdance")]
         if lic and lic.get("valid") is not True
