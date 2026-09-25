@@ -236,10 +236,13 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
         methode = d.get("methode") or "Inconnu"
         methode_counts[methode] = methode_counts.get(methode, 0) + 1
 
+    # Licences Breakdance jamais vérifiées (status "a_verifier") OU explicitement
+    # invalides/désactivées (valid=False) — pas juste les jamais-contrôlées.
     breakdance_licenses_a_verifier = [
         {"client": d.get("client"), "url": d.get("url")}
         for d in data
-        if ((d.get("licenses") or {}).get("breakdance") or {}).get("status") == "a_verifier"
+        for lic in [(d.get("licenses") or {}).get("breakdance")]
+        if lic and lic.get("valid") is not True
     ]
 
     return {

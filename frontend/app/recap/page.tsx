@@ -399,10 +399,10 @@ export default function RecapPage() {
                 )}
               </Card>
 
-              <Card title={`Licences Breakdance à vérifier — ${data.breakdance_licenses_a_verifier.length}`}>
+              <Card title={`Licences Breakdance à vérifier ou inactives — ${data.breakdance_licenses_a_verifier.length}`}>
                 {data.breakdance_licenses_a_verifier.length === 0 ? (
                   <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
-                    Aucune licence à vérifier.
+                    Aucune licence à vérifier ou inactive.
                   </p>
                 ) : (
                   <>

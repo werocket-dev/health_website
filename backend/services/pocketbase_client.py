@@ -231,11 +231,12 @@ def get_recap_summary() -> dict:
         methode = p.latest_methode_scan or "Inconnu"
         methode_counts[methode] = methode_counts.get(methode, 0) + 1
 
-    # 6. Licences Breakdance au statut "à vérifier" (jamais validées par l'Agent)
+    # 6. Licences Breakdance jamais vérifiées OU explicitement invalides/désactivées
     breakdance_licenses_a_verifier = [
         {"client": p.client_name, "url": p.url}
         for p in audited
-        if ((p.latest_licenses or {}).get("breakdance") or {}).get("status") == "a_verifier"
+        for lic in [(p.latest_licenses or {}).get("breakdance")]
+        if lic and lic.get("valid") is not True
     ]
 
     return {
