@@ -16,15 +16,24 @@ async function proxy(request: NextRequest, path: string[]) {
   const url = `${backendUrl}/api/${path.join("/")}${request.nextUrl.search}`;
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
 
-  const response = await fetch(url, {
-    method: request.method,
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": apiKey,
-    },
-    body: hasBody ? await request.text() : undefined,
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: request.method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey,
+      },
+      body: hasBody ? await request.text() : undefined,
+      cache: "no-store",
+    });
+  } catch (e) {
+    // Sans ce garde-fou, une coupure réseau vers le backend fait planter ce
+    // fetch() sans être rattrapée — Next.js renvoie alors un 500 générique
+    // au navigateur, sans indication que le souci vient du backend et non du proxy.
+    console.error(`[proxy] Backend injoignable (${url}) :`, e);
+    return NextResponse.json({ detail: "Backend injoignable" }, { status: 502 });
+  }
 
   const body = await response.text();
   return new NextResponse(body, {
