@@ -22,6 +22,11 @@ COPY services/ ./services/
 # un binaire de cette taille (~11 Mo) autrement ; un commit+push suffit à
 # le remplacer au prochain réentraînement (MODEL_PATH reste surchargeable
 # via une variable d'env si un Bind Mount redevient possible un jour).
+#
+# Volumes Dokploy à configurer sur ce service (sans quoi tout redéploiement
+# recrée le conteneur depuis l'image et efface ces données) :
+#   /app/data               → results.json + last_audit.json
+#   /app/screenshots_audit  → captures d'écran des audits
 
 EXPOSE 8000
 

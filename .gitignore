@@ -27,6 +27,7 @@ venv/
 screenshots_audit/
 results.json
 last_audit.json
+backend/data/
 
 # Node / Next.js
 node_modules/
