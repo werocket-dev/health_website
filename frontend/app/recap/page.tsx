@@ -149,6 +149,27 @@ export default function RecapPage() {
     }
   };
 
+  const handleBulkDeleteThemes = async (siteUrl: string) => {
+    const slugs = Array.from(selectedSites[siteUrl] ?? []);
+    if (slugs.length === 0) return;
+
+    const confirmed = window.confirm(
+      `Supprimer définitivement ces ${slugs.length} thème(s) sur ce site ? Cette action est irréversible.`
+    );
+    if (!confirmed) return;
+
+    for (const slug of slugs) {
+      const key = `${siteUrl}::theme::${slug}`;
+      setUpdateStatus((prev) => ({ ...prev, [key]: "loading" }));
+      try {
+        await axios.post(`${API_URL}/delete-theme`, { url: siteUrl, theme_slug: slug });
+        setUpdateStatus((prev) => ({ ...prev, [key]: "success" }));
+      } catch {
+        setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
+      }
+    }
+  };
+
   const toggleSite = (pluginSlug: string, url: string) => {
     setSelectedSites((prev) => {
       const current = new Set(prev[pluginSlug] ?? []);
@@ -479,44 +500,74 @@ export default function RecapPage() {
                               <span style={{ color: "rgba(23,25,28,0.4)" }}>{isExpanded ? "▲" : "▼"}</span>
                             </button>
                           </div>
-                          {isExpanded && (
-                            <div className="px-3 pb-3 pt-2 space-y-1">
-                              {site.themes.map((theme) => {
-                                const key = `${site.url}::theme::${theme.slug}`;
-                                const state = updateStatus[key];
-                                const canDelete = !theme.is_active && !theme.is_parent_of_active;
-                                return (
-                                  <div
-                                    key={key}
-                                    className="flex items-center justify-between text-xs py-1.5 px-3 border-l-4 rounded-r"
-                                    style={{
-                                      color: "rgba(23,25,28,0.8)",
-                                      borderColor: theme.is_active ? "#10b981" : "rgba(23,25,28,0.15)",
-                                      background: theme.is_active ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.6)",
-                                    }}
-                                  >
-                                    <span className="flex-1 mr-3">
-                                      {theme.name} ({theme.version}){theme.is_active && " — actif"}
-                                      {theme.is_parent_of_active && " — parent du thème actif"}
-                                    </span>
-                                    {canDelete && (
-                                      <button
-                                        onClick={() => handleDeleteTheme(site.url, theme.slug, theme.name)}
-                                        disabled={!!state}
-                                        className="shrink-0 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-                                        style={{
-                                          background: state === "success" ? "rgba(0,226,158,0.15)" : "rgba(220,38,38,0.08)",
-                                          color: state === "success" ? "#087A61" : "#dc2626",
-                                        }}
-                                      >
-                                        {state === "loading" ? "..." : state === "success" ? "✓ Supprimé" : state === "error" ? "✗ Erreur" : "Supprimer"}
-                                      </button>
-                                    )}
+                          {isExpanded && (() => {
+                            const deletableSlugs = site.themes
+                              .filter((t) => !t.is_active && !t.is_parent_of_active)
+                              .map((t) => t.slug);
+                            const selected = selectedSites[site.url] ?? new Set<string>();
+                            const allSelected = deletableSlugs.length > 0 && deletableSlugs.every((s) => selected.has(s));
+                            return (
+                              <div className="px-3 pb-3 pt-2 space-y-1">
+                                {deletableSlugs.length > 0 && (
+                                  <div className="flex items-center justify-between py-1.5">
+                                    <button
+                                      onClick={() => toggleAllSites(site.url, deletableSlugs)}
+                                      className="text-xs font-medium cursor-pointer hover:underline"
+                                      style={{ color: "var(--color-deep-teal)" }}
+                                    >
+                                      {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                                    </button>
+                                    <button
+                                      onClick={() => handleBulkDeleteThemes(site.url)}
+                                      disabled={selected.size === 0}
+                                      className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                      style={{ background: "rgba(220,38,38,0.1)", color: "#dc2626" }}
+                                    >
+                                      Supprimer la sélection ({selected.size})
+                                    </button>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                                )}
+                                {site.themes.map((theme) => {
+                                  const key = `${site.url}::theme::${theme.slug}`;
+                                  const state = updateStatus[key];
+                                  const canDelete = !theme.is_active && !theme.is_parent_of_active;
+                                  return (
+                                    <label
+                                      key={key}
+                                      className="flex items-center gap-2 text-xs py-1.5 px-3 border-l-4 rounded-r"
+                                      style={{
+                                        color: "rgba(23,25,28,0.8)",
+                                        borderColor: theme.is_active ? "#10b981" : "rgba(23,25,28,0.15)",
+                                        background: theme.is_active ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.6)",
+                                        cursor: canDelete ? "pointer" : "default",
+                                      }}
+                                    >
+                                      {canDelete && (
+                                        <input
+                                          type="checkbox"
+                                          checked={selected.has(theme.slug)}
+                                          onChange={() => toggleSite(site.url, theme.slug)}
+                                        />
+                                      )}
+                                      <span className="flex-1">
+                                        {theme.name} ({theme.version}){theme.is_active && " — actif"}
+                                        {theme.is_parent_of_active && " — parent du thème actif"}
+                                      </span>
+                                      {state && (
+                                        <span
+                                          style={{
+                                            color: state === "success" ? "#087A61" : state === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
+                                          }}
+                                        >
+                                          {state === "loading" ? "..." : state === "success" ? "✓ Supprimé" : "✗ Erreur"}
+                                        </span>
+                                      )}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}
