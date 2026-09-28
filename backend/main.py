@@ -297,19 +297,14 @@ def _compute_stats_from_results(data: list[dict]) -> dict:
 
 @app.on_event("startup")
 def check_pocketbase():
-    import time
-    max_attempts = 15
-    delay_seconds = 2
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            call_pb_worker("ping")
-            return
-        except Exception:
-            if attempt == max_attempts:
-                raise
-            print(f"⏳ PocketBase non prêt (tentative {attempt}/{max_attempts}), nouvelle tentative dans {delay_seconds}s...")
-            time.sleep(delay_seconds)
+    # PocketBase n'est qu'un secours (results.json est la source principale) :
+    # une route publique lente/injoignable ne doit jamais empêcher l'API de
+    # démarrer. Avant, ce check bloquait le démarrage jusqu'à ~25 min (15
+    # tentatives) puis faisait planter tout le conteneur en boucle.
+    try:
+        call_pb_worker("ping", timeout=10)
+    except Exception as e:
+        print(f"⚠️  PocketBase injoignable au démarrage ({e}) — l'API démarre quand même.")
 
 @app.get("/")
 async def root():
