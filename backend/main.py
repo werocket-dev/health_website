@@ -424,6 +424,7 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return PluginUpdateResponse(success=True, message=result.get('message', 'Plugin mis à jour avec succès'))
+    print(f"[audit] ❌ update-plugin échoué pour {body.url} ({body.plugin_slug}): {result.get('error')}")
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.post("/api/delete-theme", response_model=ThemeDeleteResponse, dependencies=[Depends(require_api_key)])
@@ -439,6 +440,7 @@ async def delete_theme(request: Request, body: ThemeDeleteRequest):
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return ThemeDeleteResponse(success=True, message=result.get('message', 'Thème supprimé avec succès'))
+    print(f"[audit] ❌ delete-theme échoué pour {body.url} ({body.theme_slug}): {result.get('error')}")
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.post("/api/activate-license", response_model=LicenseActivateResponse, dependencies=[Depends(require_api_key)])
@@ -454,6 +456,7 @@ async def activate_license(request: Request, body: LicenseActivateRequest):
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return LicenseActivateResponse(success=True, message=result.get('message', 'Licence activée avec succès'))
+    print(f"[audit] ❌ activate-license échoué pour {body.url}: {result.get('error')}")
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.post("/api/update-core", response_model=CoreUpdateResponse, dependencies=[Depends(require_api_key)])
@@ -469,6 +472,7 @@ async def update_core(request: Request, body: CoreUpdateRequest):
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
         return CoreUpdateResponse(success=True, message=result.get('message', 'WordPress mis à jour avec succès'), version=result.get('version'))
+    print(f"[audit] ❌ update-core échoué pour {body.url}: {result.get('error')}")
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
 
 @app.get("/api/progress", dependencies=[Depends(require_api_key)])
