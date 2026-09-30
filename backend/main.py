@@ -16,6 +16,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -25,12 +26,14 @@ from audit_engine import (
     update_core_via_agent,
     delete_theme_via_agent,
     activate_license_via_agent,
+    install_plugin_zip,
     refresh_site_in_results,
     call_pb_worker,
     RESULTS_FILE,
     LAST_AUDIT_FILE,
 )
 from services.pocketbase_client import is_php_obsolete
+from services import breakdance_zip
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -240,7 +243,7 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
     # Licences Breakdance jamais vérifiées (status "a_verifier") OU explicitement
     # invalides/désactivées (valid=False) — pas juste les jamais-contrôlées.
     breakdance_licenses_a_verifier = [
-        {"client": d.get("client"), "url": d.get("url"), "valid": lic.get("valid")}
+        {"client": d.get("client"), "url": d.get("url"), "valid": lic.get("valid"), "plugin_version": lic.get("plugin_version")}
         for d in data
         for lic in [(d.get("licenses") or {}).get("breakdance")]
         if lic and lic.get("valid") is not True
@@ -469,6 +472,159 @@ async def update_core(request: Request, body: CoreUpdateRequest):
         return CoreUpdateResponse(success=True, message=result.get('message', 'WordPress mis à jour avec succès'), version=result.get('version'))
     print(f"[audit] ❌ update-core échoué pour {body.url}: {result.get('error')}")
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))
+
+# ============================================================================
+# BREAKDANCE — zip GPL hébergé ici, installé sur les sites par l'Agent
+# ============================================================================
+
+@app.post("/api/breakdance/zip", dependencies=[Depends(require_api_key)])
+async def upload_breakdance_zip(request: Request):
+    """
+    Reçoit le zip Breakdance en corps brut (nom dans X-Filename), le valide
+    (uniquement breakdance/, version lue dans plugin.php) puis remplace le zip courant.
+    Corps brut plutôt que multipart : pas de dépendance en plus, et le zip est
+    écrit sur disque au fil de l'eau sans être chargé en mémoire.
+    """
+    import tempfile
+    filename = request.headers.get("x-filename", "breakdance.zip")
+    fd, tmp_path = tempfile.mkstemp(dir=breakdance_zip.ZIP_DIR, suffix=".upload")
+    size = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > breakdance_zip.MAX_ZIP_BYTES:
+                    raise HTTPException(status_code=413, detail="Zip trop volumineux (max 200 Mo)")
+                f.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Fichier vide")
+        try:
+            meta = breakdance_zip.store_zip(tmp_path, filename)
+        except breakdance_zip.ZipError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    print(f"[audit] zip Breakdance mis à jour : v{meta['version']} ({meta['size']} octets)")
+    return meta
+
+@app.get("/api/breakdance/zip", dependencies=[Depends(require_api_key)])
+def get_breakdance_zip():
+    return {"zip": breakdance_zip.get_meta()}
+
+@app.get("/dl/breakdance/{token}")
+def download_breakdance_zip(token: str):
+    """Public (l'agent WP n'envoie aucun header) : protégé uniquement par le token HMAC à durée limitée."""
+    if not breakdance_zip.verify_token(token):
+        raise HTTPException(status_code=403, detail="Lien invalide ou expiré")
+    return FileResponse(breakdance_zip.ZIP_FILE, media_type="application/zip", filename="breakdance.zip")
+
+class BreakdanceInstallSite(BaseModel):
+    url: str
+    license_key: Optional[str] = None
+
+class BreakdanceInstallRequest(BaseModel):
+    sites: List[BreakdanceInstallSite]
+
+_BD_CONCURRENCY = 3
+_bd_jobs: dict = {}
+_bd_tasks: set = set()
+
+async def _run_breakdance_job(job_id: str, sites: List[BreakdanceInstallSite]):
+    import asyncio
+    job = _bd_jobs[job_id]
+    sem = asyncio.Semaphore(_BD_CONCURRENCY)
+
+    async def one(site: BreakdanceInstallSite):
+        state = job["sites"][site.url]
+        async with sem:
+            try:
+                meta = breakdance_zip.get_meta()
+                if not meta:
+                    raise RuntimeError("Aucun zip Breakdance uploadé")
+                state["status"] = "installing"
+                # Token généré au moment de traiter CE site : il n'expire pas
+                # pendant l'attente dans la file.
+                zip_url = breakdance_zip.build_download_url(meta["sha256"])
+                inst = await asyncio.to_thread(install_plugin_zip, site.url, zip_url, meta["sha256"])
+                if not inst.get("success"):
+                    state.update(status="error", stage="install", message=inst.get("error", "Erreur inconnue"))
+                    return
+                state.update(status="installed", old_version=inst.get("old_version"), new_version=inst.get("new_version"),
+                             message=inst.get("message", "Installé"))
+
+                if site.license_key and site.license_key.strip():
+                    state["status"] = "activating"
+                    act = await asyncio.to_thread(activate_license_via_agent, site.url, site.license_key.strip())
+                    lic = act.get("license") or {}
+                    state["license_status"] = lic.get("status")
+                    if act.get("success"):
+                        final = dict(status="done", message=act.get("message", "Installé et licence activée"))
+                    else:
+                        final = dict(status="error", stage="activation", message=act.get("error", "Activation échouée"))
+                else:
+                    final = dict(status="done", message="Installé (aucune clé fournie, licence non activée)")
+
+                # Statut final publié seulement après le rafraîchissement : le front
+                # recharge le récap dès que tous les sites sont terminés.
+                refresh = await asyncio.to_thread(refresh_site_in_results, site.url)
+                if not refresh.get("success"):
+                    print(f"[audit] ⚠️  results.json non rafraîchi pour {site.url}: {refresh.get('error')}")
+                state.update(final)
+            except Exception as e:
+                state.update(status="error", stage=state.get("stage") or "install", message=str(e)[:200])
+            finally:
+                # Ne pas garder la clé de licence en mémoire une fois le site traité.
+                site.license_key = None
+
+    try:
+        await asyncio.gather(*(one(s) for s in sites))
+    finally:
+        job["finished"] = True
+
+@app.post("/api/breakdance/install-and-activate", dependencies=[Depends(require_api_key)])
+async def breakdance_install_and_activate(request: Request, body: BreakdanceInstallRequest):
+    """
+    Lance en arrière-plan l'installation du zip puis l'activation de la licence sur
+    chaque site (3 en parallèle max, un échec ne bloque pas les autres). Un job
+    de plusieurs minutes dépasserait les timeouts du proxy : on renvoie un job_id
+    à interroger via GET /api/breakdance/jobs/{job_id}.
+    """
+    import asyncio, uuid
+    if not breakdance_zip.get_meta():
+        raise HTTPException(status_code=400, detail="Aucun zip Breakdance uploadé")
+    try:
+        breakdance_zip.build_download_url("0" * 64)  # échoue tôt si PUBLIC_BACKEND_URL / secret manquants
+    except breakdance_zip.ZipError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if any(not j["finished"] for j in _bd_jobs.values()):
+        raise HTTPException(status_code=409, detail="Une installation Breakdance est déjà en cours")
+
+    sites = list({s.url: s for s in body.sites}.values())
+    if not sites:
+        raise HTTPException(status_code=400, detail="Aucun site sélectionné")
+
+    print(f"[audit] /api/breakdance/install-and-activate from {request.client.host} sites={len(sites)}")
+    job_id = uuid.uuid4().hex
+    _bd_jobs[job_id] = {
+        "finished": False,
+        "sites": {s.url: {"status": "pending"} for s in sites},
+    }
+    for old in list(_bd_jobs)[:-10]:
+        if _bd_jobs[old]["finished"]:
+            del _bd_jobs[old]
+
+    task = asyncio.create_task(_run_breakdance_job(job_id, sites))
+    _bd_tasks.add(task)
+    task.add_done_callback(_bd_tasks.discard)
+    return {"job_id": job_id}
+
+@app.get("/api/breakdance/jobs/{job_id}", dependencies=[Depends(require_api_key)])
+def breakdance_job_status(job_id: str):
+    job = _bd_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job introuvable (backend redémarré ?)")
+    return job
 
 @app.get("/api/progress", dependencies=[Depends(require_api_key)])
 async def get_progress():

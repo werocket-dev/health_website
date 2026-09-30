@@ -283,7 +283,9 @@ def activate_license_via_agent(url: str, license_key: str) -> dict:
                 data = response.json()
                 if data.get('success'):
                     return {'success': True, 'message': data.get('message', 'Licence activée'), 'license': data.get('license')}
-                return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
+                # L'agent répond 200 + success:false quand la clé est refusée : on remonte
+                # aussi le statut de licence relu, jamais un faux succès.
+                return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress'), 'license': data.get('license')}
             except json.JSONDecodeError:
                 return {'success': False, 'error': 'Réponse non-JSON depuis WordPress'}
         elif response.status_code == 404:
@@ -291,6 +293,73 @@ def activate_license_via_agent(url: str, license_key: str) -> dict:
         elif response.status_code == 403:
             return {'success': False, 'error': '403 - Accès refusé (clé invalide)'}
 
+        return {'success': False, 'error': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        return {'success': False, 'error': str(e)[:80]}
+
+def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
+    """
+    Installe/remplace Breakdance depuis un zip hébergé par la plateforme, via
+    la route /werocket/v1/install-plugin-zip de l'Agent. C'est l'agent qui
+    télécharge le zip (hôte à autoriser dans WEROCKET_ZIP_ALLOWED_HOSTS) et
+    vérifie le sha256. Timeout long : téléchargement + décompression côté WP.
+    """
+    if not AGENT_AVAILABLE:
+        return {'success': False, 'error': 'Agent non configuré (variables .env manquantes)'}
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        try:
+            pre_check = session.head(url, timeout=5, allow_redirects=True)
+            final_base_url = pre_check.url.rstrip('/')
+        except Exception:
+            final_base_url = url.rstrip('/')
+
+        timestamp = int(time.time())
+        route = "/werocket/v1/install-plugin-zip"
+        message = f"{final_base_url}|{timestamp}|{route}"
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
+
+        payload = {
+            'timestamp': timestamp,
+            'signature': signature,
+            'zip_url': zip_url,
+            'sha256': sha256,
+        }
+        headers = {
+            'X-WeRocket-Key': WEROCKET_AGENT_HEADER_KEY,
+            'Content-Type': 'application/json',
+        }
+
+        endpoint = f"{final_base_url}/wp-json/werocket/v1/install-plugin-zip"
+        print(f"      📦 Installation zip Breakdance sur : {endpoint}")  # l'URL du zip contient un token : ne pas la logger
+
+        response = session.post(endpoint, json=payload, headers=headers, timeout=300, verify=True)
+
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            data = None
+
+        if response.status_code == 200 and isinstance(data, dict):
+            if data.get('success'):
+                return {
+                    'success': True,
+                    'message': data.get('message', 'Breakdance installé'),
+                    'old_version': data.get('old_version'),
+                    'new_version': data.get('new_version'),
+                    'was_active': data.get('was_active'),
+                }
+            return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
+        if response.status_code == 404 and not (isinstance(data, dict) and data.get('code') not in (None, 'rest_no_route')):
+            return {'success': False, 'error': '404 - Route install-plugin-zip non disponible (agent WP à mettre à jour)'}
+        if isinstance(data, dict) and data.get('message'):
+            return {'success': False, 'error': f"{data['message']} (HTTP {response.status_code})"[:200]}
         return {'success': False, 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:

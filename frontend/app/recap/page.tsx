@@ -37,7 +37,37 @@ type BreakdanceLicenseSite = {
   client: string;
   url: string;
   valid: boolean | null;
+  plugin_version: string | null;
 };
+
+type BreakdanceZip = {
+  filename: string;
+  size: number;
+  sha256: string;
+  version: string;
+  uploaded_at: string;
+};
+
+type BreakdanceSiteJob = {
+  status: "pending" | "installing" | "installed" | "activating" | "done" | "error";
+  stage?: "install" | "activation";
+  message?: string;
+  old_version?: string | null;
+  new_version?: string | null;
+};
+
+const BREAKDANCE_STATUS_LABEL: Record<BreakdanceSiteJob["status"], string> = {
+  pending: "En attente",
+  installing: "Installation…",
+  installed: "Installé",
+  activating: "Activation…",
+  done: "✓ Installé et activé",
+  error: "✗ Erreur",
+};
+
+function formatSize(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} Mo`;
+}
 
 type ThemeInfo = {
   slug: string;
@@ -205,26 +235,75 @@ export default function RecapPage() {
 
   const [showLicenseModal, setShowLicenseModal] = useState(false);
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
-  const [activatingLicenses, setActivatingLicenses] = useState(false);
+  const [bdZip, setBdZip] = useState<BreakdanceZip | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [bdJob, setBdJob] = useState<Record<string, BreakdanceSiteJob>>({});
+  const [bdRunning, setBdRunning] = useState(false);
+  const [bdError, setBdError] = useState<string | null>(null);
 
-  const handleActivateLicenses = async () => {
-    const urls = Array.from(selectedSites["breakdance-license"] ?? []);
-    if (urls.length === 0 || !licenseKeyInput.trim()) return;
+  useEffect(() => {
+    axios
+      .get<{ zip: BreakdanceZip | null }>(`${API_URL}/breakdance/zip`)
+      .then(({ data }) => setBdZip(data.zip))
+      .catch(() => {});
+  }, []);
 
-    setActivatingLicenses(true);
-    for (const url of urls) {
-      const key = `${url}::breakdance-license`;
-      setUpdateStatus((prev) => ({ ...prev, [key]: "loading" }));
-      try {
-        await axios.post(`${API_URL}/activate-license`, { url, license_key: licenseKeyInput.trim() });
-        setUpdateStatus((prev) => ({ ...prev, [key]: "success" }));
-      } catch {
-        setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
-      }
+  const handleUploadZip = async (file: File) => {
+    setUploadError(null);
+    setUploadProgress(0);
+    try {
+      // Corps brut (pas de multipart) vers la route dédiée, qui relaie le flux au backend.
+      const { data } = await axios.post<BreakdanceZip>("/api/breakdance-upload", file, {
+        headers: { "Content-Type": "application/octet-stream", "X-Filename": file.name },
+        onUploadProgress: (e) => e.total && setUploadProgress(Math.round((e.loaded / e.total) * 100)),
+      });
+      setBdZip(data);
+    } catch (e) {
+      const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
+      setUploadError(typeof detail === "string" ? detail : "Échec de l'upload");
+    } finally {
+      setUploadProgress(null);
     }
-    setActivatingLicenses(false);
+  };
+
+  const handleInstallAndActivate = async () => {
+    const urls = Array.from(selectedSites["breakdance-license"] ?? []);
+    if (urls.length === 0 || !bdZip) return;
+
+    setBdError(null);
+    setBdRunning(true);
+    setBdJob(Object.fromEntries(urls.map((u) => [u, { status: "pending" as const }])));
     setShowLicenseModal(false);
-    setLicenseKeyInput("");
+    try {
+      const key = licenseKeyInput.trim() || null;
+      const { data } = await axios.post<{ job_id: string }>(`${API_URL}/breakdance/install-and-activate`, {
+        sites: urls.map((url) => ({ url, license_key: key })),
+      });
+      setLicenseKeyInput("");
+
+      // Le job dure plusieurs minutes : on suit sa progression par polling.
+      let finished = false;
+      while (!finished) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const { data: job } = await axios.get<{ finished: boolean; sites: Record<string, BreakdanceSiteJob> }>(
+            `${API_URL}/breakdance/jobs/${data.job_id}`
+          );
+          setBdJob(job.sites);
+          finished = job.finished;
+        } catch (e) {
+          // Job perdu (backend redémarré) : inutile de boucler indéfiniment.
+          if (axios.isAxiosError(e) && e.response?.status === 404) throw e;
+        }
+      }
+      setRetryCount((c) => c + 1); // recharge le récap avec les nouveaux statuts
+    } catch (e) {
+      const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
+      setBdError(typeof detail === "string" ? detail : "Échec du lancement de l'installation");
+    } finally {
+      setBdRunning(false);
+    }
   };
 
   useEffect(() => {
@@ -582,6 +661,39 @@ export default function RecapPage() {
                   </p>
                 ) : (
                   <>
+                    <div className="mb-3 p-3 rounded-lg border text-xs space-y-2" style={{ borderColor: "rgba(23,25,28,0.1)" }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <span style={{ color: "var(--color-ink)" }}>
+                          {bdZip
+                            ? `Zip actuel : Breakdance v${bdZip.version} — ${bdZip.filename} (${formatSize(bdZip.size)}, ${new Date(bdZip.uploaded_at).toLocaleDateString("fr-FR")})`
+                            : "Aucun zip Breakdance uploadé"}
+                        </span>
+                        <label
+                          className="px-3 py-1 rounded-full font-medium cursor-pointer whitespace-nowrap"
+                          style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)", opacity: uploadProgress !== null ? 0.5 : 1 }}
+                        >
+                          {bdZip ? "Remplacer le zip" : "Uploader le zip"}
+                          <input
+                            type="file"
+                            accept=".zip"
+                            className="hidden"
+                            disabled={uploadProgress !== null}
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              e.target.value = "";
+                              if (f) handleUploadZip(f);
+                            }}
+                          />
+                        </label>
+                      </div>
+                      {uploadProgress !== null && (
+                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(23,25,28,0.08)" }}>
+                          <div className="h-full" style={{ width: `${uploadProgress}%`, background: "var(--color-neon)" }} />
+                        </div>
+                      )}
+                      {uploadError && <p style={{ color: "#dc2626" }}>{uploadError}</p>}
+                      {bdError && <p style={{ color: "#dc2626" }}>{bdError}</p>}
+                    </div>
                     {(() => {
                       const selected = selectedSites["breakdance-license"] ?? new Set<string>();
                       const urls = data.breakdance_licenses_a_verifier.map((s) => s.url);
@@ -598,16 +710,16 @@ export default function RecapPage() {
                             </button>
                             <button
                               onClick={() => setShowLicenseModal(true)}
-                              disabled={selected.size === 0}
+                              disabled={selected.size === 0 || !bdZip || bdRunning}
                               className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                               style={{ background: "var(--color-neon)", color: "var(--color-ink)" }}
                             >
-                              Activer la licence sur la sélection ({selected.size})
+                              {bdRunning ? "Installation en cours…" : `Installer + activer sur la sélection (${selected.size})`}
                             </button>
                           </div>
                           {data.breakdance_licenses_a_verifier.map((site) => {
-                            const key = `${site.url}::breakdance-license`;
-                            const status = updateStatus[key];
+                            const job = bdJob[site.url];
+                            const outdated = !!bdZip && !!site.plugin_version && site.plugin_version !== bdZip.version;
                             return (
                               <label
                                 key={site.url}
@@ -625,13 +737,22 @@ export default function RecapPage() {
                                 <span style={{ color: site.valid === false ? "#dc2626" : "rgba(23,25,28,0.5)" }}>
                                   {site.valid === false ? "✗ Inactive" : "⚠ À vérifier"}
                                 </span>
-                                {status && (
+                                {site.plugin_version && (
+                                  <span style={{ color: outdated ? "#b45309" : "rgba(23,25,28,0.5)" }}>
+                                    v{site.plugin_version}
+                                    {outdated ? " (ancienne)" : ""}
+                                  </span>
+                                )}
+                                {job && (
                                   <span
+                                    title={job.message}
                                     style={{
-                                      color: status === "success" ? "#087A61" : status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
+                                      color: job.status === "done" ? "#087A61" : job.status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
                                     }}
                                   >
-                                    {status === "loading" ? "..." : status === "success" ? "✓ OK" : "✗ Erreur"}
+                                    {BREAKDANCE_STATUS_LABEL[job.status]}
+                                    {job.status === "error" && job.message ? ` — ${job.message}` : ""}
+                                    {job.status === "done" && job.new_version ? ` (v${job.new_version})` : ""}
                                   </span>
                                 )}
                               </label>
@@ -652,7 +773,7 @@ export default function RecapPage() {
         <div
           className="fixed inset-0 flex items-center justify-center z-50"
           style={{ background: "rgba(23,25,28,0.4)" }}
-          onClick={() => !activatingLicenses && setShowLicenseModal(false)}
+          onClick={() => setShowLicenseModal(false)}
         >
           <div
             className="rounded-2xl p-6 w-full max-w-sm space-y-4"
@@ -660,15 +781,17 @@ export default function RecapPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold" style={{ color: "var(--color-ink)" }}>
-              Activer la licence Breakdance
+              Installer + activer Breakdance
             </h3>
             <p className="text-xs" style={{ color: "rgba(23,25,28,0.5)" }}>
-              Cette clé sera appliquée à {(selectedSites["breakdance-license"] ?? new Set()).size} site(s) sélectionné(s).
+              Le plugin Breakdance sera <strong>remplacé</strong> par la v{bdZip?.version} sur{" "}
+              {(selectedSites["breakdance-license"] ?? new Set()).size} site(s) sélectionné(s), puis la clé ci-dessous sera appliquée.
+              Sans clé, seule l&apos;installation est faite.
             </p>
             <input
               type="text"
               autoFocus
-              placeholder="Clé de licence Breakdance"
+              placeholder="Clé de licence Breakdance (facultative)"
               value={licenseKeyInput}
               onChange={(e) => setLicenseKeyInput(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border text-sm"
@@ -677,19 +800,18 @@ export default function RecapPage() {
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowLicenseModal(false)}
-                disabled={activatingLicenses}
                 className="px-3 py-2 rounded-lg text-sm font-medium cursor-pointer disabled:opacity-50"
                 style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)" }}
               >
                 Annuler
               </button>
               <button
-                onClick={handleActivateLicenses}
-                disabled={activatingLicenses || !licenseKeyInput.trim()}
+                onClick={handleInstallAndActivate}
+                disabled={!bdZip}
                 className="px-3 py-2 rounded-lg text-sm font-medium cursor-pointer disabled:opacity-50"
                 style={{ background: "var(--color-ink)", color: "var(--color-white)" }}
               >
-                {activatingLicenses ? "Activation..." : "Activer"}
+                Remplacer le plugin
               </button>
             </div>
           </div>
