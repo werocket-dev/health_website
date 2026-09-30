@@ -302,7 +302,7 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
     """
     Installe/remplace Breakdance depuis un zip hébergé par la plateforme, via
     la route /werocket/v1/install-plugin-zip de l'Agent. C'est l'agent qui
-    télécharge le zip (hôte à autoriser dans WEROCKET_ZIP_ALLOWED_HOSTS) et
+    télécharge le zip (le sha256 et l'URL sont signés) et
     vérifie le sha256. Timeout long : téléchargement + décompression côté WP.
     """
     if not AGENT_AVAILABLE:
@@ -322,7 +322,9 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
 
         timestamp = int(time.time())
         route = "/werocket/v1/install-plugin-zip"
-        message = f"{final_base_url}|{timestamp}|{route}"
+        # La signature couvre aussi sha256 et zip_url (l'agent ≥ 3.5.0 le vérifie) : sans ça,
+        # quiconque forgerait la requête pourrait désigner un zip arbitraire à installer.
+        message = f"{final_base_url}|{timestamp}|{route}|{sha256}|{zip_url}"
         signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
 
         payload = {
