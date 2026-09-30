@@ -126,7 +126,8 @@ def verify_token(token: str) -> bool:
 
 def build_download_url(sha256: str) -> str:
     base = (os.getenv("PUBLIC_BACKEND_URL") or "").rstrip("/")
-    if not base.startswith("https://"):
-        # L'agent WP refuse tout ce qui n'est pas HTTPS.
-        raise ZipError("PUBLIC_BACKEND_URL doit être défini en https:// (URL publique du backend)")
+    # HTTP accepté : l'intégrité repose sur le sha256 que l'agent vérifie après
+    # téléchargement, pas sur le transport (le zip GPL n'a rien de confidentiel).
+    if not base.startswith(("http://", "https://")):
+        raise ZipError("PUBLIC_BACKEND_URL doit être défini (http:// ou https://, URL publique du backend)")
     return f"{base}/dl/breakdance/{make_token(sha256)}"
