@@ -322,7 +322,11 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
 
         timestamp = int(time.time())
         route = "/werocket/v1/install-plugin-zip"
-        message = f"{final_base_url}|{timestamp}|{route}"
+        # La signature couvre aussi sha256 et zip_url (agent ≥ 3.5.0) : exactement
+        # site_url|timestamp|route|sha256|zip_url, avec le sha256 en minuscules et
+        # la MÊME chaîne d'URL que celle placée dans le corps JSON ci-dessous.
+        sha256 = sha256.strip().lower()
+        message = f"{final_base_url}|{timestamp}|{route}|{sha256}|{zip_url}"
         signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
 
         payload = {
