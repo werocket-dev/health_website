@@ -53,3 +53,6 @@ yarn-error.log*
 
 # OS
 .DS_Store
+
+# Jeu de test "difficile" (captures de vrais sites, volumineux) : non versionné
+/scripts_entrainement/eval_hard_set/
