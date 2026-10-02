@@ -18,6 +18,7 @@ import json
 from dotenv import load_dotenv
 
 from services.config import RESULTS_FILE, LAST_AUDIT_FILE
+from services import capture_settings as cs
 from services.agent_client import (
     connect_to_agent,
     update_plugin_via_agent,
@@ -205,22 +206,19 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
 
             # A. Capture d'écran + scraping + agent
             try:
-                viewport_width = random.randint(1280, 1920)
-                viewport_height = random.randint(720, 1080)
-
                 context = await browser.new_context(
-                    viewport={'width': viewport_width, 'height': viewport_height},
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    viewport=cs.random_desktop_viewport(),
+                    user_agent=cs.DESKTOP_USER_AGENT
                 )
                 page = await context.new_page()
-                home_response = await page.goto(url, wait_until="load", timeout=25000)
+                home_response = await page.goto(url, wait_until="load", timeout=cs.HOME_TIMEOUT_MS)
                 # Statut HTTP de l'accueil : un 403/500 est un site bloqué ou en erreur,
                 # pas un verdict visuel à demander à l'IA.
                 http_status = home_response.status if home_response else None
 
                 # ⚡ CRUCIAL : On attend 4 secondes pour que le JavaScript se termine
                 # (Divi, Elementor et autres builders ont besoin de ce délai)
-                await page.wait_for_timeout(4000)
+                await page.wait_for_timeout(cs.WAIT_AFTER_LOAD_MS)
 
                 # Récupération du HTML COMPLET (avec JS exécuté)
                 html_content = await page.content()
@@ -233,12 +231,12 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                 mobile_img_path = f"{SCREENSHOT_DIR}/{clean_name}_mobile.png"
                 try:
                     mobile_context = await browser.new_context(
-                        viewport={'width': 390, 'height': 844},
-                        user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                        viewport=cs.MOBILE_VIEWPORT,
+                        user_agent=cs.MOBILE_USER_AGENT
                     )
                     mobile_page = await mobile_context.new_page()
-                    await mobile_page.goto(url, wait_until="load", timeout=25000)
-                    await mobile_page.wait_for_timeout(4000)
+                    await mobile_page.goto(url, wait_until="load", timeout=cs.HOME_TIMEOUT_MS)
+                    await mobile_page.wait_for_timeout(cs.WAIT_AFTER_LOAD_MS)
                     await mobile_page.screenshot(path=mobile_img_path)
                     await mobile_page.close()
                     await mobile_context.close()
@@ -248,12 +246,12 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                 # Contact page capture — on stocke le chemin, TF sera appelé plus tard
                 from urllib.parse import urljoin
                 contact_img_path = None
-                for slug in ["/contact", "/contactez-nous"]:
+                for slug in cs.CONTACT_SLUGS:
                     try:
                         contact_url = urljoin(url, slug)
-                        response = await page.goto(contact_url, wait_until="load", timeout=15000)
+                        response = await page.goto(contact_url, wait_until="load", timeout=cs.CONTACT_TIMEOUT_MS)
                         if response and response.status == 200:
-                            await page.wait_for_timeout(2000)
+                            await page.wait_for_timeout(cs.CONTACT_WAIT_AFTER_LOAD_MS)
                             _contact_path = f"{SCREENSHOT_DIR}/{clean_name}_contact.png"
                             await page.screenshot(path=_contact_path)
                             contact_img_path = _contact_path

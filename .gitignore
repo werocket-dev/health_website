@@ -56,3 +56,4 @@ yarn-error.log*
 
 # Jeu de test "difficile" (captures de vrais sites, volumineux) : non versionné
 /scripts_entrainement/eval_hard_set/
+/scripts_entrainement/dataset_v2/

@@ -1,0 +1,32 @@
+# Sites du jeu de test (eval_hard_set/) : EXCLUS de l'entraînement.
+# Un nom par ligne, tel qu'il apparaît dans le dashboard (accents, majuscules et
+# ponctuation ignorés). Ajouter ici tout site ajouté à eval_hard_set/.
+COWORKING DU MOUTON
+LES SENS DU PIANO
+TRM
+FRÉDÉRIC BELLEDENT // FB+ENERGIES
+HORIZON BOIS
+AIL FOUD
+ATELIER DE LA VISION
+SEBELEC
+DOMAINE DE COURON
+TAB CONCEPT
+PIZZA CARBONI
+AQUAFLAM
+AU FOURNIL MATHALIEN
+SUD IMMO
+USI MECA (renouvellement 23/06/2026)
+BPF PLOMBERIE
+HOTEL GLANN AR MOR
+BARROS ANDRE
+OCM
+TABAC PORT BRILLET // ETS TABAC PRESSE
+L'ECRIN DE DOUCEUR
+DOMAINE DU CHATEAU LARROQUE
+LE MIJOTE
+DIRAT
+ADI
+SNLD
+MHA NATURE
+FBS
+YOGAEA
