@@ -33,7 +33,7 @@ from audit_engine import (
     LAST_AUDIT_FILE,
 )
 from services.pocketbase_client import is_php_obsolete
-from services import breakdance_zip
+from services import breakdance_zip, job_guard
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -526,19 +526,28 @@ class BreakdanceInstallSite(BaseModel):
 class BreakdanceInstallRequest(BaseModel):
     sites: List[BreakdanceInstallSite]
 
-_BD_CONCURRENCY = 3
+_BD_CONCURRENCY = 2
+_BD_PACE_SECONDS = (1.0, 2.5)  # pause par worker entre deux sites : on évite la rafale
 _bd_jobs: dict = {}
 _bd_tasks: set = set()
 
 async def _run_breakdance_job(job_id: str, sites: List[BreakdanceInstallSite]):
-    import asyncio
+    import asyncio, random
     job = _bd_jobs[job_id]
     sem = asyncio.Semaphore(_BD_CONCURRENCY)
+    guard = job_guard.JobGuard()
 
     async def one(site: BreakdanceInstallSite):
         state = job["sites"][site.url]
         async with sem:
             try:
+                ip = await asyncio.to_thread(job_guard.resolve_ip, site.url)
+                skip = guard.skip_reason(ip)
+                if skip:
+                    state.update(status="skipped", message=skip)
+                    job["aborted_reason"] = guard.aborted_reason
+                    return
+
                 meta = breakdance_zip.get_meta()
                 if not meta:
                     raise RuntimeError("Aucun zip Breakdance uploadé")
@@ -548,8 +557,13 @@ async def _run_breakdance_job(job_id: str, sites: List[BreakdanceInstallSite]):
                 zip_url = breakdance_zip.build_download_url(meta["sha256"])
                 inst = await asyncio.to_thread(install_plugin_zip, site.url, zip_url, meta["sha256"])
                 if not inst.get("success"):
-                    state.update(status="error", stage="install", message=inst.get("error", "Erreur inconnue"))
+                    msg = inst.get("error", "Erreur inconnue")
+                    guard.record(ip, job_guard.classify_error(msg))
+                    job["aborted_reason"] = guard.aborted_reason
+                    print(f"[audit] ❌ breakdance install échoué pour {site.url}: {msg}")
+                    state.update(status="error", stage="install", message=msg)
                     return
+                guard.record(ip, "ok")
                 state.update(status="installed", old_version=inst.get("old_version"), new_version=inst.get("new_version"),
                              message=inst.get("message", "Installé"))
 
@@ -561,7 +575,9 @@ async def _run_breakdance_job(job_id: str, sites: List[BreakdanceInstallSite]):
                     if act.get("success"):
                         final = dict(status="done", message=act.get("message", "Installé et licence activée"))
                     else:
-                        final = dict(status="error", stage="activation", message=act.get("error", "Activation échouée"))
+                        msg = act.get("error", "Activation échouée")
+                        print(f"[audit] ❌ breakdance activation échouée pour {site.url}: {msg}")
+                        final = dict(status="error", stage="activation", message=msg)
                 else:
                     final = dict(status="done", message="Installé (aucune clé fournie, licence non activée)")
 
@@ -572,10 +588,12 @@ async def _run_breakdance_job(job_id: str, sites: List[BreakdanceInstallSite]):
                     print(f"[audit] ⚠️  results.json non rafraîchi pour {site.url}: {refresh.get('error')}")
                 state.update(final)
             except Exception as e:
+                print(f"[audit] ❌ breakdance erreur inattendue pour {site.url}: {e}")
                 state.update(status="error", stage=state.get("stage") or "install", message=str(e)[:200])
             finally:
                 # Ne pas garder la clé de licence en mémoire une fois le site traité.
                 site.license_key = None
+                await asyncio.sleep(random.uniform(*_BD_PACE_SECONDS))
 
     try:
         await asyncio.gather(*(one(s) for s in sites))
@@ -608,6 +626,7 @@ async def breakdance_install_and_activate(request: Request, body: BreakdanceInst
     job_id = uuid.uuid4().hex
     _bd_jobs[job_id] = {
         "finished": False,
+        "aborted_reason": None,
         "sites": {s.url: {"status": "pending"} for s in sites},
     }
     for old in list(_bd_jobs)[:-10]:
