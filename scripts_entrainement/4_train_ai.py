@@ -4,6 +4,7 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import preprocess
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout, RandomZoom, RandomContrast
 from tensorflow.keras.models import Model
@@ -67,10 +68,10 @@ print(f"📊 Split par site : {len(train_sites)} sites en train, {len(val_sites)
 print(f"📊 Images : {len(train_files)} en train, {len(val_files)} en validation")
 
 def load_image(filepath, label):
-    image = tf.io.read_file(filepath)
-    image = tf.image.decode_png(image, channels=3)
-    image = tf.image.resize(image, IMG_SIZE)
-    return image, label
+    # Préparation PARTAGÉE avec la mesure et l'audit (voir preprocess.py) : on ne
+    # réécrit jamais ces lignes ici, sinon l'entraînement et la production
+    # divergent à nouveau sans que personne ne s'en aperçoive.
+    return preprocess.load_image(filepath), label
 
 train_labels_arr = np.array(train_labels, dtype=np.float32).reshape(-1, 1)
 val_labels_arr = np.array(val_labels, dtype=np.float32).reshape(-1, 1)

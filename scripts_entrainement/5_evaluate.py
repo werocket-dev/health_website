@@ -25,6 +25,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import numpy as np
 import tensorflow as tf
 import keras
+import preprocess
 
 EVAL_DIR = "eval_hard_set"
 IMG_SIZE = (224, 224)
@@ -57,10 +58,17 @@ def load_prod(path: str) -> np.ndarray:
 
 
 def load_train(path: str) -> np.ndarray:
+    # L'ANCIENNE préparation d'entraînement (bilinéaire sans antialias).
+    # Gardée uniquement pour mesurer les anciens modèles.
     raw = tf.io.read_file(path)
     img = tf.image.decode_png(raw, channels=3)
     img = tf.image.resize(img, IMG_SIZE)
     return img.numpy() / 255.0
+
+
+def load_shared(path: str) -> np.ndarray:
+    # La NOUVELLE préparation, partagée avec 4_train_ai.py (preprocess.py).
+    return preprocess.load_image(path).numpy() / 255.0
 
 
 def collect_images():
@@ -110,18 +118,24 @@ def main():
     print(f"Images : {sum(1 for i in items if i[0] == 'healthy')} saines, "
           f"{sum(1 for i in items if i[0] == 'broken')} cassées")
 
-    scores_prod = predict_all(model, items, load_prod)
-    scores_train = predict_all(model, items, load_train)
-
-    summarize("Préparation 'prod' (celle de l'audit : nearest)", items, scores_prod)
-    summarize("Préparation 'train' (celle de l'entraînement : bilinéaire)", items, scores_train)
+    loaders = {
+        "prod": ("audit actuel : nearest", load_prod),
+        "ancien_train": ("ancien entraînement : bilinéaire", load_train),
+        "partagé": ("NOUVEAU preprocess.py : antialias", load_shared),
+    }
+    all_scores = {}
+    for key, (desc, loader) in loaders.items():
+        all_scores[key] = predict_all(model, items, loader)
+        summarize(f"Préparation '{key}' ({desc})", items, all_scores[key])
+    scores_prod = all_scores["prod"]
 
     print("\n=== Détail image par image (score 0-100, 100 = sain) ===")
-    print(f"{'vérité':8} {'prod':>5} {'train':>5}  image")
-    for (label, name, _), sp, st in zip(items, scores_prod, scores_train):
-        wrong = (label == "healthy" and sp <= 0.7) or (label == "broken" and sp > 0.5)
-        flag = "  <-- erreur" if wrong else ""
-        print(f"{label:8} {sp * 100:5.0f} {st * 100:5.0f}  {name}{flag}")
+    print(f"{'vérité':8} {'prod':>5} {'ancien':>6} {'nouv.':>5}  image")
+    for i, (label, name, _) in enumerate(items):
+        sp, st, sn = (all_scores[k][i] for k in ("prod", "ancien_train", "partagé"))
+        wrong = (label == "healthy" and sn <= 0.7) or (label == "broken" and sn > 0.5)
+        flag = "  <-- erreur (préparation nouvelle)" if wrong else ""
+        print(f"{label:8} {sp * 100:5.0f} {st * 100:6.0f} {sn * 100:5.0f}  {name}{flag}")
 
 
 if __name__ == "__main__":
