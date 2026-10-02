@@ -158,6 +158,7 @@ class SiteResult(BaseModel):
     methode: Optional[str] = "N/A"
     licenses: Optional[dict] = None
     themes: Optional[list] = None
+    http_status: Optional[int] = None
 
 class PaginatedResults(BaseModel):
     items: List[SiteResult]
@@ -192,9 +193,23 @@ def _parse_plugin_updates(mises_a_jour: str) -> list[dict]:
         })
     return entries
 
+def _is_http_error(d: dict) -> bool:
+    status = d.get("http_status")
+    return isinstance(status, int) and status >= 400
+
 def _compute_recap_from_results(data: list[dict]) -> dict:
+    # Sites dont l'accueil répond 4xx/5xx (403 pare-feu, 500 erreur critique...) :
+    # la capture est alors une page d'erreur, le score IA n'a pas de sens — on les
+    # liste à part au lieu de les mélanger aux faux positifs visuels.
+    http_erreur = sorted(
+        ({"client": d.get("client"), "url": d.get("url"), "http_status": d["http_status"]} for d in data if _is_http_error(d)),
+        key=lambda s: (-s["http_status"], s["client"] or ""),
+    )
+
     ia_faible = []
     for d in data:
+        if _is_http_error(d):
+            continue
         checks = [
             ("accueil", d.get("ia_status"), d.get("ia_score")),
             ("contact", d.get("ia_status_contact"), d.get("ia_score_contact")),
@@ -265,6 +280,7 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
     return {
         "total_sites": len(data),
         "ia_faible": ia_faible,
+        "http_erreur": http_erreur,
         "plugin_frequency": plugin_frequency,
         "php_obsolete": php_obsolete,
         "methode_counts": methode_counts,
