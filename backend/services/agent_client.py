@@ -24,6 +24,28 @@ else:
     _signing_key = SigningKey(bytes.fromhex(WEROCKET_PRIVATE_KEY_HEX[:64]))
 
 
+def describe_request_error(e: Exception) -> str:
+    """Message lisible pour une exception réseau. L'ancien `str(e)[:80]` tronquait
+    "HTTPSConnectionPool(host=..., port=443): Max retries exceeded" avant la cause
+    réelle (timeout de connexion, DNS, TLS...), ce qui masquait un blocage d'IP."""
+    if isinstance(e, requests.exceptions.ConnectTimeout):
+        return "Délai de connexion dépassé (serveur injoignable ou IP bloquée)"
+    if isinstance(e, requests.exceptions.ReadTimeout):
+        return "Délai de réponse dépassé"
+    if isinstance(e, requests.exceptions.SSLError):
+        return "Erreur SSL/TLS"
+    if isinstance(e, requests.exceptions.ConnectionError):
+        text = str(e)
+        if "Name or service not known" in text or "nodename nor servname" in text or "NameResolution" in text:
+            return "Nom de domaine introuvable (DNS)"
+        if "refused" in text.lower():
+            return "Connexion refusée"
+        if "timed out" in text.lower() or "Max retries" in text:
+            return "Délai de connexion dépassé (serveur injoignable ou IP bloquée)"
+        return "Connexion impossible"
+    return str(e)[:80]
+
+
 def connect_to_agent(url):
     """
     Connexion sécurisée à l'Agent WeRocket via API REST WordPress.
@@ -109,7 +131,7 @@ def connect_to_agent(url):
         return {'success': False, 'method': 'Agent', 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:
-        return {'success': False, 'method': 'Agent', 'error': str(e)[:50]}
+        return {'success': False, 'method': 'Agent', 'error': describe_request_error(e)}
 
 def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
     """
@@ -176,7 +198,7 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
         return {'success': False, 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:
-        return {'success': False, 'error': str(e)[:80]}
+        return {'success': False, 'error': describe_request_error(e)}
 
 def delete_theme_via_agent(url: str, theme_slug: str) -> dict:
     """
@@ -235,7 +257,7 @@ def delete_theme_via_agent(url: str, theme_slug: str) -> dict:
         return {'success': False, 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:
-        return {'success': False, 'error': str(e)[:80]}
+        return {'success': False, 'error': describe_request_error(e)}
 
 def activate_license_via_agent(url: str, license_key: str) -> dict:
     """
@@ -296,7 +318,7 @@ def activate_license_via_agent(url: str, license_key: str) -> dict:
         return {'success': False, 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:
-        return {'success': False, 'error': str(e)[:80]}
+        return {'success': False, 'error': describe_request_error(e)}
 
 def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
     """
@@ -367,7 +389,7 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
         return {'success': False, 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:
-        return {'success': False, 'error': str(e)[:80]}
+        return {'success': False, 'error': describe_request_error(e)}
 
 def update_core_via_agent(url: str) -> dict:
     """
@@ -433,7 +455,7 @@ def update_core_via_agent(url: str) -> dict:
         return {'success': False, 'error': f'HTTP {response.status_code}'}
 
     except Exception as e:
-        return {'success': False, 'error': str(e)[:80]}
+        return {'success': False, 'error': describe_request_error(e)}
 
 
 def parse_agent_data(data):

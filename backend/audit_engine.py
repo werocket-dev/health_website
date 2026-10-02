@@ -213,7 +213,10 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                     user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 )
                 page = await context.new_page()
-                await page.goto(url, wait_until="load", timeout=25000)
+                home_response = await page.goto(url, wait_until="load", timeout=25000)
+                # Statut HTTP de l'accueil : un 403/500 est un site bloqué ou en erreur,
+                # pas un verdict visuel à demander à l'IA.
+                http_status = home_response.status if home_response else None
 
                 # ⚡ CRUCIAL : On attend 4 secondes pour que le JavaScript se termine
                 # (Divi, Elementor et autres builders ont besoin de ce délai)
@@ -328,6 +331,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                     "project_id": project_id,
                     "project_name": project_name,
                     "url": url,
+                    "http_status": http_status,
                     "img_path": img_path,
                     "mobile_img_path": mobile_img_path,
                     "contact_img_path": contact_img_path,
@@ -448,6 +452,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
             "methode": methode_scan,
             "licenses": licenses_info,
             "themes": themes_list,
+            "http_status": entry.get("http_status"),
         })
 
         if not project_id:

@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 
 const API_URL = "/api/backend";
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 type IAFaibleSite = {
   client: string;
@@ -49,7 +50,7 @@ type BreakdanceZip = {
 };
 
 type BreakdanceSiteJob = {
-  status: "pending" | "installing" | "installed" | "activating" | "done" | "error";
+  status: "pending" | "installing" | "installed" | "activating" | "done" | "error" | "skipped";
   stage?: "install" | "activation";
   message?: string;
   old_version?: string | null;
@@ -63,6 +64,7 @@ const BREAKDANCE_STATUS_LABEL: Record<BreakdanceSiteJob["status"], string> = {
   activating: "Activation…",
   done: "✓ Installé et activé",
   error: "✗ Erreur",
+  skipped: "⏭ Ignoré",
 };
 
 function formatSize(bytes: number): string {
@@ -84,9 +86,16 @@ type TooManyThemesSite = {
   themes: ThemeInfo[];
 };
 
+type HttpErrorSite = {
+  client: string;
+  url: string;
+  http_status: number;
+};
+
 type RecapData = {
   total_sites: number;
   ia_faible: IAFaibleSite[];
+  http_erreur: HttpErrorSite[];
   plugin_frequency: PluginFrequency[];
   php_obsolete: PhpObsoleteSite[];
   methode_counts: Record<string, number>;
@@ -162,6 +171,7 @@ export default function RecapPage() {
   const [expandedThemesSite, setExpandedThemesSite] = useState<string | null>(null);
   const [selectedSites, setSelectedSites] = useState<Record<string, Set<string>>>({});
   const [updateStatus, setUpdateStatus] = useState<Record<string, "loading" | "success" | "error">>({});
+  const [bulkUpdateNotice, setBulkUpdateNotice] = useState<string | null>(null);
 
   const handleDeleteTheme = async (siteUrl: string, themeSlug: string, themeName: string) => {
     const confirmed = window.confirm(
@@ -220,15 +230,28 @@ export default function RecapPage() {
   const handleBulkUpdate = async (pluginSlug: string) => {
     const urls = Array.from(selectedSites[pluginSlug] ?? []);
     if (urls.length === 0) return;
+    setBulkUpdateNotice(null);
 
+    // Garde-fou : une série d'échecs d'affilée signale un blocage (pare-feu, IP
+    // bannie, agent trop ancien). Insister multiplie les requêtes en erreur, ce qui
+    // peut faire bannir l'IP — on arrête et on le dit.
+    let consecutiveFailures = 0;
     for (const url of urls) {
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        setBulkUpdateNotice(
+          `Mise à jour arrêtée après ${MAX_CONSECUTIVE_FAILURES} échecs consécutifs : ${urls.length - urls.indexOf(url)} site(s) non traité(s). Vérifie les erreurs avant de relancer.`
+        );
+        break;
+      }
       const key = `${url}::${pluginSlug}`;
       setUpdateStatus((prev) => ({ ...prev, [key]: "loading" }));
       try {
         await axios.post(`${API_URL}/update-plugin`, { url, plugin_slug: pluginSlug });
         setUpdateStatus((prev) => ({ ...prev, [key]: "success" }));
+        consecutiveFailures = 0;
       } catch {
         setUpdateStatus((prev) => ({ ...prev, [key]: "error" }));
+        consecutiveFailures += 1;
       }
     }
   };
@@ -241,6 +264,7 @@ export default function RecapPage() {
   const [bdJob, setBdJob] = useState<Record<string, BreakdanceSiteJob>>({});
   const [bdRunning, setBdRunning] = useState(false);
   const [bdError, setBdError] = useState<string | null>(null);
+  const [bdAbortReason, setBdAbortReason] = useState<string | null>(null);
 
   useEffect(() => {
     axios
@@ -272,6 +296,7 @@ export default function RecapPage() {
     if (urls.length === 0 || !bdZip) return;
 
     setBdError(null);
+    setBdAbortReason(null);
     setBdRunning(true);
     setBdJob(Object.fromEntries(urls.map((u) => [u, { status: "pending" as const }])));
     setShowLicenseModal(false);
@@ -287,10 +312,13 @@ export default function RecapPage() {
       while (!finished) {
         await new Promise((r) => setTimeout(r, 3000));
         try {
-          const { data: job } = await axios.get<{ finished: boolean; sites: Record<string, BreakdanceSiteJob> }>(
-            `${API_URL}/breakdance/jobs/${data.job_id}`
-          );
+          const { data: job } = await axios.get<{
+            finished: boolean;
+            aborted_reason: string | null;
+            sites: Record<string, BreakdanceSiteJob>;
+          }>(`${API_URL}/breakdance/jobs/${data.job_id}`);
           setBdJob(job.sites);
+          setBdAbortReason(job.aborted_reason);
           finished = job.finished;
         } catch (e) {
           // Job perdu (backend redémarré) : inutile de boucler indéfiniment.
@@ -384,6 +412,35 @@ export default function RecapPage() {
                 </div>
               </Card>
 
+              {(data.http_erreur ?? []).length > 0 && (
+                <Card title={`Sites en erreur HTTP (accueil 4xx/5xx) — ${data.http_erreur.length}`}>
+                  <p className="text-xs mb-3" style={{ color: "rgba(23,25,28,0.5)" }}>
+                    La capture est une page d&apos;erreur : le score IA n&apos;est pas pertinent, ces sites ne figurent donc pas dans la liste ci-dessous.
+                    403 = accès bloqué (pare-feu), 500 = erreur serveur ou erreur critique WordPress.
+                  </p>
+                  <div className="space-y-1.5">
+                    {data.http_erreur.map((site) => (
+                      <div
+                        key={site.url}
+                        className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
+                        style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.05)" }}
+                      >
+                        <a
+                          href={site.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium hover:underline"
+                          style={{ color: "var(--color-deep-teal)" }}
+                        >
+                          {site.client}
+                        </a>
+                        <strong style={{ color: "#b45309" }}>HTTP {site.http_status}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
               <Card title={`Sites avec un score IA faible (< 70%) — ${data.ia_faible.length}`}>
                 {data.ia_faible.length === 0 ? (
                   <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
@@ -469,6 +526,11 @@ export default function RecapPage() {
                               >
                                 {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
                               </button>
+                              {bulkUpdateNotice && (
+                                <span className="text-xs mr-3" style={{ color: "#b45309" }}>
+                                  {bulkUpdateNotice}
+                                </span>
+                              )}
                               <button
                                 onClick={() => handleBulkUpdate(p.plugin_slug)}
                                 disabled={selected.size === 0}
@@ -693,6 +755,11 @@ export default function RecapPage() {
                       )}
                       {uploadError && <p style={{ color: "#dc2626" }}>{uploadError}</p>}
                       {bdError && <p style={{ color: "#dc2626" }}>{bdError}</p>}
+                      {bdAbortReason && (
+                        <p style={{ color: "#b45309" }}>
+                          Installation arrêtée automatiquement : {bdAbortReason}. Les sites restants sont marqués « Ignoré ».
+                        </p>
+                      )}
                     </div>
                     {(() => {
                       const selected = selectedSites["breakdance-license"] ?? new Set<string>();
