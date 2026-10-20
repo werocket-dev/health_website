@@ -181,6 +181,8 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
             verify=True
         )
 
+        print(f"      🔧 Réponse agent update '{plugin_slug}' : HTTP {response.status_code} {response.text[:300]}")
+
         if response.status_code == 200:
             try:
                 data = response.json()
