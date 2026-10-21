@@ -18,7 +18,7 @@ import json
 from dotenv import load_dotenv
 
 from services.config import RESULTS_FILE, LAST_AUDIT_FILE
-from services.json_store import results_lock, write_json_atomic
+from services.json_store import results_lock, write_json_atomic, merge_audit_results
 from services import capture_settings as cs
 from services.agent_client import (
     connect_to_agent,
@@ -137,6 +137,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
         dict: Statistiques de l'audit avec détails par site
     """
     audit_started_at = datetime.now(timezone.utc).isoformat()
+    partial_audit = sites_list is not None or bool(limit)
 
     # 1. Récupération des sites à auditer
     if sites_list is None:
@@ -566,15 +567,10 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                 # l'audit est plus récent que ce que l'audit a mesuré avant : on le garde.
                 try:
                     with open(RESULTS_FILE, "r", encoding="utf-8") as f:
-                        current = {e.get("url"): e for e in json.load(f) if isinstance(e, dict)}
+                        current = json.load(f)
                 except (OSError, ValueError):
-                    current = {}
-                json_results = [
-                    current[r["url"]]
-                    if (current.get(r["url"]) or {}).get("refreshed_at", "") > audit_started_at
-                    else r
-                    for r in json_results
-                ]
+                    current = []
+                json_results = merge_audit_results(current, json_results, audit_started_at, partial_audit)
                 write_json_atomic(RESULTS_FILE, json_results)
             print(f"✅ Résultats sauvegardés dans {RESULTS_FILE} ({len(json_results)} sites)")
         except Exception as e:

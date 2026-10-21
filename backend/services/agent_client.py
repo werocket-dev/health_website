@@ -7,6 +7,8 @@ from nacl.signing import SigningKey
 from dotenv import load_dotenv
 
 from .config import RESULTS_FILE
+from urllib.parse import urljoin
+from . import url_guard
 from .json_store import results_lock, write_json_atomic
 from .plugin_updates import analyze_version_gap
 
@@ -24,6 +26,26 @@ else:
     # PyNaCl attend le "seed" 32 octets (64 caractères hex) — pas le format
     # libsodium 64 octets (128 hex) qui concatène seed+clé publique.
     _signing_key = SigningKey(bytes.fromhex(WEROCKET_PRIVATE_KEY_HEX[:64]))
+
+
+def _resolve_final_base_url(session, url: str) -> str:
+    """URL finale d'un site après redirections (http→https, www…). Les redirections sont
+    suivies à la main : chaque étape doit rester sur un hôte public avant d'être contactée,
+    sinon un site compromis pourrait nous rediriger vers une adresse interne et contourner
+    le garde d'URL. En cas de problème on garde l'URL d'origine, déjà validée."""
+    current = url
+    try:
+        for _ in range(5):
+            resp = session.head(current, timeout=5, allow_redirects=False)
+            location = resp.headers.get('Location')
+            if not (resp.is_redirect and location):
+                return current.rstrip('/')
+            nxt = urljoin(current, location)
+            url_guard.validate_site_url(nxt, require_known=False)
+            current = nxt
+    except Exception:
+        pass
+    return url.rstrip('/')
 
 
 def describe_request_error(e: Exception) -> str:
@@ -64,14 +86,7 @@ def connect_to_agent(url):
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
-        try:
-            # On teste la racine du site pour avoir la bonne version (http/https/www)
-            # allow_redirects=True va suivre jusqu'à la destination finale
-            pre_check = session.head(url, timeout=5, allow_redirects=True)
-            final_base_url = pre_check.url.rstrip('/') # Ex: https://www.stedi.fr
-        except:
-            # Si le HEAD échoue, on reste sur l'URL d'origine
-            final_base_url = url.rstrip('/')
+        final_base_url = _resolve_final_base_url(session, url)
 
         # 1. Génération du timestamp
         timestamp = int(time.time())
@@ -149,11 +164,7 @@ def update_plugin_via_agent(url: str, plugin_slug: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
-        try:
-            pre_check = session.head(url, timeout=5, allow_redirects=True)
-            final_base_url = pre_check.url.rstrip('/')
-        except Exception:
-            final_base_url = url.rstrip('/')
+        final_base_url = _resolve_final_base_url(session, url)
 
         timestamp = int(time.time())
         route = "/werocket/v1/update-plugin"
@@ -217,11 +228,7 @@ def delete_theme_via_agent(url: str, theme_slug: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
-        try:
-            pre_check = session.head(url, timeout=5, allow_redirects=True)
-            final_base_url = pre_check.url.rstrip('/')
-        except Exception:
-            final_base_url = url.rstrip('/')
+        final_base_url = _resolve_final_base_url(session, url)
 
         timestamp = int(time.time())
         route = "/werocket/v1/delete-theme"
@@ -276,11 +283,7 @@ def activate_license_via_agent(url: str, license_key: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
-        try:
-            pre_check = session.head(url, timeout=5, allow_redirects=True)
-            final_base_url = pre_check.url.rstrip('/')
-        except Exception:
-            final_base_url = url.rstrip('/')
+        final_base_url = _resolve_final_base_url(session, url)
 
         timestamp = int(time.time())
         route = "/werocket/v1/activate-license"
@@ -340,11 +343,7 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
-        try:
-            pre_check = session.head(url, timeout=5, allow_redirects=True)
-            final_base_url = pre_check.url.rstrip('/')
-        except Exception:
-            final_base_url = url.rstrip('/')
+        final_base_url = _resolve_final_base_url(session, url)
 
         timestamp = int(time.time())
         route = "/werocket/v1/install-plugin-zip"
@@ -409,11 +408,7 @@ def update_core_via_agent(url: str) -> dict:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
 
-        try:
-            pre_check = session.head(url, timeout=5, allow_redirects=True)
-            final_base_url = pre_check.url.rstrip('/')
-        except Exception:
-            final_base_url = url.rstrip('/')
+        final_base_url = _resolve_final_base_url(session, url)
 
         timestamp = int(time.time())
         route = "/werocket/v1/update-core"

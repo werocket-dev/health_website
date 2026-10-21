@@ -40,23 +40,24 @@ def _check_public(url: str) -> None:
             raise UrlRejected("URL refusée : l'hôte pointe vers une adresse privée ou locale")
 
 
-def _known_hosts() -> set[str] | None:
+def _known_hosts() -> set[str]:
+    """Hôtes de results.json. Fichier absent, illisible ou vide : ensemble vide, donc tout
+    est refusé — un garde de sécurité ne doit pas s'ouvrir quand son référentiel manque."""
     try:
         with open(RESULTS_FILE, "r", encoding="utf-8") as f:
             entries = json.load(f)
     except (OSError, ValueError):
-        return None
+        return set()
     hosts = {host_of(e.get("url", "")) for e in entries if isinstance(e, dict)}
     hosts.discard("")
-    return hosts or None
+    return hosts
 
 
 def validate_site_url(url: str, require_known: bool = True) -> None:
     """Refuse les URLs qui ne sont pas un site public. Avec require_known, n'accepte
     que les sites déjà audités (results.json) : le backend ne signe et n'envoie des
-    ordres qu'à des sites connus. Sans results.json lisible, seul le contrôle d'IP s'applique."""
+    ordres qu'à des sites connus. Sans results.json lisible, tout est refusé."""
     _check_public(url)
     if require_known:
-        known = _known_hosts()
-        if known is not None and host_of(url) not in known:
+        if host_of(url) not in _known_hosts():
             raise UrlRejected("Site inconnu : il doit d'abord être audité")

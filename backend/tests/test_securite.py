@@ -46,6 +46,47 @@ class JsonStoreTests(unittest.TestCase):
             self.assertEqual([f for f in os.listdir(d) if f.startswith(".tmp")], [])
 
 
+class MergeAuditTests(unittest.TestCase):
+    def _site(self, url, **extra):
+        return {"url": url, "client": url, **extra}
+
+    def test_audit_partiel_conserve_les_autres_sites(self):
+        current = [self._site("https://a.fr"), self._site("https://www.b.fr")]
+        out = json_store.merge_audit_results(current, [self._site("https://b.fr", ia="neuf")], "2026-01-01", partial=True)
+        self.assertEqual(sorted(e["url"] for e in out), ["https://a.fr", "https://b.fr"])
+        self.assertEqual([e for e in out if e["url"] == "https://b.fr"][0]["ia"], "neuf")
+
+    def test_audit_complet_remplace_tout(self):
+        current = [self._site("https://a.fr"), self._site("https://b.fr")]
+        out = json_store.merge_audit_results(current, [self._site("https://b.fr")], "2026-01-01", partial=False)
+        self.assertEqual([e["url"] for e in out], ["https://b.fr"])
+
+    def test_site_rafraichi_pendant_laudit_est_conserve(self):
+        current = [self._site("https://a.fr", refreshed_at="2026-01-02", mise="recente")]
+        out = json_store.merge_audit_results(current, [self._site("https://a.fr", mise="ancienne")], "2026-01-01", partial=False)
+        self.assertEqual(out[0]["mise"], "recente")
+
+
+class KnownHostsTests(unittest.TestCase):
+    def test_refus_si_results_illisible_ou_vide(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "results.json")
+            old = url_guard.RESULTS_FILE
+            url_guard.RESULTS_FILE = path
+            try:
+                with self.assertRaises(url_guard.UrlRejected):  # absent
+                    url_guard.validate_site_url("https://example.com")
+                with open(path, "w") as f:
+                    f.write("[]")
+                with self.assertRaises(url_guard.UrlRejected):  # vide
+                    url_guard.validate_site_url("https://example.com")
+                with open(path, "w") as f:
+                    json.dump([{"url": "https://www.example.com"}], f)
+                url_guard.validate_site_url("https://example.com")  # connu, www ignoré
+            finally:
+                url_guard.RESULTS_FILE = old
+
+
 class ZipValidationTests(unittest.TestCase):
     def _zip(self, d, files):
         path = os.path.join(d, "t.zip")
