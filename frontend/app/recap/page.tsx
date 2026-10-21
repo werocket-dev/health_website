@@ -1,7 +1,7 @@
 "use client";
 
 import axios from "axios";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 
@@ -144,6 +144,53 @@ function scoreLabel(key: string): string {
   return key;
 }
 
+type RecapTab = "problemes" | "plugins" | "themes" | "breakdance";
+type ProblemTab = "erreur" | "ia" | "php";
+const RECAP_TABS: RecapTab[] = ["problemes", "plugins", "themes", "breakdance"];
+
+function StatTile({
+  label,
+  value,
+  hint,
+  alert,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  alert?: boolean;
+  onClick?: () => void;
+}) {
+  const content = (
+    <>
+      <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgba(23,25,28,0.5)" }}>
+        {label}
+      </p>
+      <p className="text-3xl font-semibold mt-1" style={{ color: alert ? "#b45309" : "var(--color-ink)" }}>
+        {value}
+      </p>
+      <p className="text-xs mt-1" style={{ color: "rgba(23,25,28,0.5)" }}>
+        {hint}
+      </p>
+    </>
+  );
+  const style = {
+    borderColor: "rgba(23,25,28,0.08)",
+    background: "var(--color-white)",
+    boxShadow: "0 16px 40px -30px rgba(0,0,0,0.35)",
+  };
+  const className = "rounded-2xl border p-5 text-left";
+  return onClick ? (
+    <button onClick={onClick} className={`${className} cursor-pointer hover:shadow-md transition-shadow`} style={style}>
+      {content}
+    </button>
+  ) : (
+    <div className={className} style={style}>
+      {content}
+    </div>
+  );
+}
+
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div
@@ -172,6 +219,44 @@ export default function RecapPage() {
   const [selectedSites, setSelectedSites] = useState<Record<string, Set<string>>>({});
   const [updateStatus, setUpdateStatus] = useState<Record<string, "loading" | "success" | "error">>({});
   const [bulkUpdateNotice, setBulkUpdateNotice] = useState<string | null>(null);
+  const [tab, setTab] = useState<RecapTab>("problemes");
+  const [problemTab, setProblemTab] = useState<ProblemTab>("erreur");
+  const [pluginQuery, setPluginQuery] = useState("");
+
+  // L'onglet est dans l'URL (#plugins…) : un lien ou un rechargement retombe sur le bon onglet.
+  useEffect(() => {
+    const hash = window.location.hash.slice(1) as RecapTab;
+    if (RECAP_TABS.includes(hash)) setTab(hash);
+  }, []);
+
+  const goTab = (next: RecapTab, sub?: ProblemTab) => {
+    setTab(next);
+    if (sub) setProblemTab(sub);
+    window.history.replaceState(null, "", `#${next}`);
+  };
+
+  // Sans recherche : les 15 plugins les plus fréquents. Avec : tous ceux qui correspondent
+  // (par nom de plugin, ou par site — alors seuls les sites correspondants sont listés).
+  const pluginsView = useMemo(() => {
+    const list = data?.plugin_frequency ?? [];
+    const q = pluginQuery.trim().toLowerCase();
+    if (!q) return list.slice(0, 15);
+    return list.flatMap((p) => {
+      const nameMatch = p.plugin_name.toLowerCase().includes(q) || p.plugin_slug.toLowerCase().includes(q);
+      const sites = nameMatch
+        ? p.sites
+        : p.sites.filter((s) => s.client.toLowerCase().includes(q) || s.url.toLowerCase().includes(q));
+      if (sites.length === 0) return [];
+      const risk_counts = nameMatch
+        ? p.risk_counts
+        : sites.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.risk]: (acc[s.risk] ?? 0) + 1 }), {});
+      return [{ ...p, sites, sites_count: sites.length, risk_counts }];
+    });
+  }, [data, pluginQuery]);
+
+  const problemCount = data
+    ? (data.http_erreur ?? []).length + data.ia_faible.length + data.php_obsolete.length
+    : 0;
 
   const handleDeleteTheme = async (siteUrl: string, themeSlug: string, themeName: string) => {
     const confirmed = window.confirm(
@@ -384,257 +469,90 @@ export default function RecapPage() {
 
           {data && (
             <>
-              <Card title="Dernier audit">
-                <p className="text-xs mb-3" style={{ color: "rgba(23,25,28,0.5)" }}>
-                  Terminé le {formatLastAudit(data.last_audit_finished_at)}
-                </p>
-                <div className="flex gap-8">
-                  <div>
-                    <p className="text-3xl font-semibold" style={{ color: "var(--color-ink)" }}>
-                      {data.total_sites}
-                    </p>
-                    <p className="text-xs" style={{ color: "rgba(23,25,28,0.5)" }}>
-                      sites analysés dans ce récap
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-3xl font-semibold" style={{ color: "var(--color-ink)" }}>
-                      {data.methode_counts["Agent"] ?? 0}
-                      <span className="text-lg font-normal" style={{ color: "rgba(23,25,28,0.4)" }}>
-                        {" "}
-                        / {data.total_sites}
-                      </span>
-                    </p>
-                    <p className="text-xs" style={{ color: "rgba(23,25,28,0.5)" }}>
-                      sites joignables via l&apos;Agent (reste : scraping)
-                    </p>
-                  </div>
-                </div>
-              </Card>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <StatTile
+                  label="Sites suivis"
+                  value={String(data.total_sites)}
+                  hint={`Dernier audit : ${formatLastAudit(data.last_audit_finished_at)}`}
+                />
+                <StatTile
+                  label="Joignables via l'Agent"
+                  value={`${data.methode_counts["Agent"] ?? 0} / ${data.total_sites}`}
+                  hint="Les autres sont analysés par scraping"
+                />
+                <StatTile
+                  label="Sites en erreur HTTP"
+                  value={String((data.http_erreur ?? []).length)}
+                  hint="Accueil en 4xx / 5xx"
+                  alert={(data.http_erreur ?? []).length > 0}
+                  onClick={() => goTab("problemes", "erreur")}
+                />
+                <StatTile
+                  label="Plugins à mettre à jour"
+                  value={String(data.plugin_frequency.length)}
+                  hint="Plugins distincts, tous sites confondus"
+                  onClick={() => goTab("plugins")}
+                />
+              </div>
 
-              {(data.http_erreur ?? []).length > 0 && (
-                <Card title={`Sites en erreur HTTP (accueil 4xx/5xx) — ${data.http_erreur.length}`}>
-                  <p className="text-xs mb-3" style={{ color: "rgba(23,25,28,0.5)" }}>
-                    La capture est une page d&apos;erreur : le score IA n&apos;est pas pertinent, ces sites ne figurent donc pas dans la liste ci-dessous.
-                    403 = accès bloqué (pare-feu), 500 = erreur serveur ou erreur critique WordPress.
-                  </p>
-                  <div className="space-y-1.5">
-                    {data.http_erreur.map((site) => (
-                      <div
-                        key={site.url}
-                        className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
-                        style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.05)" }}
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ["problemes", "Sites à problème", problemCount],
+                  ["plugins", "Plugins", data.plugin_frequency.length],
+                  ["themes", "Thèmes", data.sites_trop_de_themes.length],
+                  ["breakdance", "Breakdance", data.breakdance_licenses_a_verifier.length],
+                ] as [RecapTab, string, number][]).map(([id, label, count]) => (
+                  <button
+                    key={id}
+                    onClick={() => goTab(id)}
+                    className="px-4 py-2 rounded-full text-sm font-medium cursor-pointer transition-colors"
+                    style={
+                      tab === id
+                        ? { background: "var(--color-ink)", color: "var(--color-white)" }
+                        : { background: "rgba(23,25,28,0.06)", color: "var(--color-ink)" }
+                    }
+                  >
+                    {label} <span style={{ opacity: 0.6 }}>{count}</span>
+                  </button>
+                ))}
+              </div>
+
+
+              {tab === "problemes" && (
+                <>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ["erreur", "Erreurs HTTP", (data.http_erreur ?? []).length],
+                      ["ia", "Score IA faible", data.ia_faible.length],
+                      ["php", "PHP obsolète", data.php_obsolete.length],
+                    ] as [ProblemTab, string, number][]).map(([id, label, count]) => (
+                      <button
+                        key={id}
+                        onClick={() => setProblemTab(id)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors"
+                        style={
+                          problemTab === id
+                            ? { background: "rgba(23,25,28,0.12)", color: "var(--color-ink)" }
+                            : { background: "transparent", color: "rgba(23,25,28,0.55)" }
+                        }
                       >
-                        <a
-                          href={site.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium hover:underline"
-                          style={{ color: "var(--color-deep-teal)" }}
-                        >
-                          {site.client}
-                        </a>
-                        <strong style={{ color: "#b45309" }}>HTTP {site.http_status}</strong>
-                      </div>
+                        {label} <span style={{ opacity: 0.6 }}>{count}</span>
+                      </button>
                     ))}
                   </div>
-                </Card>
-              )}
 
-              <Card title={`Sites avec un score IA faible (< 70%) — ${data.ia_faible.length}`}>
-                {data.ia_faible.length === 0 ? (
-                  <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
-                    Aucun site en dessous de 70%.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {data.ia_faible.map((site) => (
-                      <div
-                        key={site.url}
-                        className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
-                        style={{ borderColor: "#dc2626", background: "rgba(220,38,38,0.04)" }}
-                      >
-                        <a
-                          href={site.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium hover:underline"
-                          style={{ color: "var(--color-deep-teal)" }}
-                        >
-                          {site.client}
-                        </a>
-                        <div className="flex gap-3">
-                          {Object.entries(site.scores).map(([key, score]) => (
-                            <span key={key} style={{ color: "rgba(23,25,28,0.6)" }}>
-                              {scoreLabel(key)} <strong style={{ color: "#dc2626" }}>{score}%</strong>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
-
-              <Card title="Plugins nécessitant une mise à jour, par fréquence">
-                <div className="space-y-1.5">
-                  {data.plugin_frequency.slice(0, 15).map((p) => {
-                    const isExpanded = expandedPlugin === p.plugin_slug;
-                    const selected = selectedSites[p.plugin_slug] ?? new Set<string>();
-                    const urls = p.sites.map((s) => s.url);
-                    const allSelected = urls.length > 0 && urls.every((u) => selected.has(u));
-
-                    return (
-                      <div key={p.plugin_slug} className="rounded overflow-hidden" style={{ background: "rgba(23,25,28,0.02)" }}>
-                        <button
-                          onClick={() => setExpandedPlugin(isExpanded ? null : p.plugin_slug)}
-                          className="w-full flex items-center justify-between text-sm py-1.5 px-3 cursor-pointer"
-                        >
-                          <span className="font-medium" style={{ color: "var(--color-ink)" }}>
-                            {p.plugin_name}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            {Object.entries(p.risk_counts).map(([risk, count]) => {
-                              const { bg, color } = riskColor(risk);
-                              return (
-                                <span
-                                  key={risk}
-                                  className="px-2 py-0.5 rounded-full text-xs font-medium"
-                                  style={{ background: bg, color }}
-                                >
-                                  {RISK_LABELS[risk] ?? risk} × {count}
-                                </span>
-                              );
-                            })}
-                            <span
-                              className="px-2 py-0.5 rounded-full text-xs font-semibold"
-                              style={{ background: "rgba(23,25,28,0.08)", color: "var(--color-ink)" }}
-                            >
-                              {p.sites_count} site{p.sites_count > 1 ? "s" : ""}
-                            </span>
-                            <span style={{ color: "rgba(23,25,28,0.4)" }}>{isExpanded ? "▲" : "▼"}</span>
-                          </div>
-                        </button>
-
-                        {isExpanded && (
-                          <div className="px-3 pb-3 space-y-1">
-                            <div className="flex items-center justify-between py-1.5">
-                              <button
-                                onClick={() => toggleAllSites(p.plugin_slug, urls)}
-                                className="text-xs font-medium cursor-pointer hover:underline"
-                                style={{ color: "var(--color-deep-teal)" }}
-                              >
-                                {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
-                              </button>
-                              {bulkUpdateNotice && (
-                                <span className="text-xs mr-3" style={{ color: "#b45309" }}>
-                                  {bulkUpdateNotice}
-                                </span>
-                              )}
-                              <button
-                                onClick={() => handleBulkUpdate(p.plugin_slug)}
-                                disabled={selected.size === 0}
-                                className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                                style={{ background: "var(--color-neon)", color: "var(--color-ink)" }}
-                              >
-                                Mettre à jour la sélection ({selected.size})
-                              </button>
-                            </div>
-                            {p.sites.map((site) => {
-                              const key = `${site.url}::${p.plugin_slug}`;
-                              const status = updateStatus[key];
-                              const { color } = riskColor(site.risk);
-                              return (
-                                <label
-                                  key={site.url}
-                                  className="flex items-center gap-2 text-xs py-1 px-2 rounded cursor-pointer"
-                                  style={{ background: "rgba(255,255,255,0.6)" }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selected.has(site.url)}
-                                    onChange={() => toggleSite(p.plugin_slug, site.url)}
-                                  />
-                                  <span className="flex-1" style={{ color: "var(--color-ink)" }}>
-                                    {site.client}
-                                  </span>
-                                  <span style={{ color }}>{RISK_LABELS[site.risk] ?? site.risk}</span>
-                                  {status && (
-                                    <span
-                                      style={{
-                                        color: status === "success" ? "#087A61" : status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
-                                      }}
-                                    >
-                                      {status === "loading" ? "..." : status === "success" ? "✓ OK" : "✗ Erreur"}
-                                    </span>
-                                  )}
-                                  {status === "error" && p.plugin_slug === "breakdance" && bdZip && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        setSelectedSites((prev) => ({ ...prev, "breakdance-license": new Set([site.url]) }));
-                                        setShowLicenseModal(true);
-                                      }}
-                                      className="px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer"
-                                      style={{ background: "var(--color-ink)", color: "var(--color-white)" }}
-                                    >
-                                      Installer le zip v{bdZip.version}
-                                    </button>
-                                  )}
-                                </label>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-
-              <Card title={`Sites sur une version PHP obsolète (< 8.1) — ${data.php_obsolete.length}`}>
-                {data.php_obsolete.length === 0 ? (
-                  <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
-                    Aucun site en PHP obsolète.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {data.php_obsolete.map((site) => (
-                      <div
-                        key={site.url}
-                        className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
-                        style={{ borderColor: "#dc2626", background: "rgba(220,38,38,0.04)" }}
-                      >
-                        <a
-                          href={site.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium hover:underline"
-                          style={{ color: "var(--color-deep-teal)" }}
-                        >
-                          {site.client}
-                        </a>
-                        <span style={{ color: "#dc2626" }}>PHP {site.php_version}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
-
-              <Card title={`Sites avec plus de 3 thèmes WordPress — ${data.sites_trop_de_themes.length}`}>
-                {data.sites_trop_de_themes.length === 0 ? (
-                  <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
-                    Aucun site avec un excès de thèmes.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {data.sites_trop_de_themes.map((site) => {
-                      const isExpanded = expandedThemesSite === site.url;
-                      return (
-                        <div key={site.url} className="rounded overflow-hidden" style={{ background: "rgba(23,25,28,0.02)" }}>
+                  {problemTab === "erreur" && (
+                    <Card title={`Sites en erreur HTTP (accueil 4xx/5xx) — ${data.http_erreur.length}`}>
+                      <p className="text-xs mb-3" style={{ color: "rgba(23,25,28,0.5)" }}>
+                        La capture est une page d&apos;erreur : le score IA n&apos;est pas pertinent, ces sites ne figurent donc pas dans la liste ci-dessous.
+                        403 = accès bloqué (pare-feu), 500 = erreur serveur ou erreur critique WordPress.
+                      </p>
+                      <div className="space-y-1.5">
+                        {data.http_erreur.map((site) => (
                           <div
+                            key={site.url}
                             className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
-                            style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.04)" }}
+                            style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.05)" }}
                           >
                             <a
                               href={site.url}
@@ -645,205 +563,446 @@ export default function RecapPage() {
                             >
                               {site.client}
                             </a>
-                            <button
-                              onClick={() => setExpandedThemesSite(isExpanded ? null : site.url)}
-                              className="flex items-center gap-2 cursor-pointer"
-                              style={{ color: "#d97706" }}
-                            >
-                              {site.themes_count} thèmes installés
-                              <span style={{ color: "rgba(23,25,28,0.4)" }}>{isExpanded ? "▲" : "▼"}</span>
-                            </button>
+                            <strong style={{ color: "#b45309" }}>HTTP {site.http_status}</strong>
                           </div>
-                          {isExpanded && (() => {
-                            const deletableSlugs = site.themes
-                              .filter((t) => !t.is_active && !t.is_parent_of_active)
-                              .map((t) => t.slug);
-                            const selected = selectedSites[site.url] ?? new Set<string>();
-                            const allSelected = deletableSlugs.length > 0 && deletableSlugs.every((s) => selected.has(s));
-                            return (
-                              <div className="px-3 pb-3 pt-2 space-y-1">
-                                {deletableSlugs.length > 0 && (
-                                  <div className="flex items-center justify-between py-1.5">
-                                    <button
-                                      onClick={() => toggleAllSites(site.url, deletableSlugs)}
-                                      className="text-xs font-medium cursor-pointer hover:underline"
-                                      style={{ color: "var(--color-deep-teal)" }}
-                                    >
-                                      {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
-                                    </button>
-                                    <button
-                                      onClick={() => handleBulkDeleteThemes(site.url)}
-                                      disabled={selected.size === 0}
-                                      className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                                      style={{ background: "rgba(220,38,38,0.1)", color: "#dc2626" }}
-                                    >
-                                      Supprimer la sélection ({selected.size})
-                                    </button>
-                                  </div>
-                                )}
-                                {site.themes.map((theme) => {
-                                  const key = `${site.url}::theme::${theme.slug}`;
-                                  const state = updateStatus[key];
-                                  const canDelete = !theme.is_active && !theme.is_parent_of_active;
-                                  return (
-                                    <label
-                                      key={key}
-                                      className="flex items-center gap-2 text-xs py-1.5 px-3 border-l-4 rounded-r"
-                                      style={{
-                                        color: "rgba(23,25,28,0.8)",
-                                        borderColor: theme.is_active ? "#10b981" : "rgba(23,25,28,0.15)",
-                                        background: theme.is_active ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.6)",
-                                        cursor: canDelete ? "pointer" : "default",
-                                      }}
-                                    >
-                                      {canDelete && (
-                                        <input
-                                          type="checkbox"
-                                          checked={selected.has(theme.slug)}
-                                          onChange={() => toggleSite(site.url, theme.slug)}
-                                        />
-                                      )}
-                                      <span className="flex-1">
-                                        {theme.name} ({theme.version}){theme.is_active && " — actif"}
-                                        {theme.is_parent_of_active && " — parent du thème actif"}
-                                      </span>
-                                      {state && (
-                                        <span
-                                          style={{
-                                            color: state === "success" ? "#087A61" : state === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
-                                          }}
-                                        >
-                                          {state === "loading" ? "..." : state === "success" ? "✓ Supprimé" : "✗ Erreur"}
-                                        </span>
-                                      )}
-                                    </label>
-                                  );
-                                })}
+                        ))}
+                      </div>
+                      {data.http_erreur.length === 0 && (
+                        <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                          Aucun site en erreur HTTP.
+                        </p>
+                      )}
+                    </Card>
+                  )}
+
+                  {problemTab === "ia" && (
+                    <Card title={`Sites avec un score IA faible (< 70%) — ${data.ia_faible.length}`}>
+                      {data.ia_faible.length === 0 ? (
+                        <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                          Aucun site en dessous de 70%.
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {data.ia_faible.map((site) => (
+                            <div
+                              key={site.url}
+                              className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
+                              style={{ borderColor: "#dc2626", background: "rgba(220,38,38,0.04)" }}
+                            >
+                              <a
+                                href={site.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-medium hover:underline"
+                                style={{ color: "var(--color-deep-teal)" }}
+                              >
+                                {site.client}
+                              </a>
+                              <div className="flex gap-3">
+                                {Object.entries(site.scores).map(([key, score]) => (
+                                  <span key={key} style={{ color: "rgba(23,25,28,0.6)" }}>
+                                    {scoreLabel(key)} <strong style={{ color: "#dc2626" }}>{score}%</strong>
+                                  </span>
+                                ))}
                               </div>
-                            );
-                          })()}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Card>
+                  )}
+
+                  {problemTab === "php" && (
+                    <Card title={`Sites sur une version PHP obsolète (< 8.1) — ${data.php_obsolete.length}`}>
+                      {data.php_obsolete.length === 0 ? (
+                        <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                          Aucun site en PHP obsolète.
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {data.php_obsolete.map((site) => (
+                            <div
+                              key={site.url}
+                              className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
+                              style={{ borderColor: "#dc2626", background: "rgba(220,38,38,0.04)" }}
+                            >
+                              <a
+                                href={site.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-medium hover:underline"
+                                style={{ color: "var(--color-deep-teal)" }}
+                              >
+                                {site.client}
+                              </a>
+                              <span style={{ color: "#dc2626" }}>PHP {site.php_version}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Card>
+                  )}
+                </>
+              )}
+
+              {tab === "plugins" && (
+                <Card title="Plugins nécessitant une mise à jour, par fréquence">
+                  <input
+                    type="search"
+                    value={pluginQuery}
+                    onChange={(e) => setPluginQuery(e.target.value)}
+                    placeholder="Rechercher un plugin ou un site (nom, URL)…"
+                    className="w-full mb-4 px-3 py-2 rounded-lg border text-sm"
+                    style={{ borderColor: "rgba(23,25,28,0.15)", color: "var(--color-ink)" }}
+                  />
+                  {pluginsView.length === 0 && (
+                    <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                      {pluginQuery.trim() ? "Aucun plugin ni site ne correspond à cette recherche." : "Aucun plugin à mettre à jour."}
+                    </p>
+                  )}
+                  <div className="space-y-1.5">
+                    {pluginsView.map((p) => {
+                      const isExpanded = expandedPlugin === p.plugin_slug;
+                      const selected = selectedSites[p.plugin_slug] ?? new Set<string>();
+                      const urls = p.sites.map((s) => s.url);
+                      const allSelected = urls.length > 0 && urls.every((u) => selected.has(u));
+
+                      return (
+                        <div key={p.plugin_slug} className="rounded overflow-hidden" style={{ background: "rgba(23,25,28,0.02)" }}>
+                          <button
+                            onClick={() => setExpandedPlugin(isExpanded ? null : p.plugin_slug)}
+                            className="w-full flex items-center justify-between text-sm py-1.5 px-3 cursor-pointer"
+                          >
+                            <span className="font-medium" style={{ color: "var(--color-ink)" }}>
+                              {p.plugin_name}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {Object.entries(p.risk_counts).map(([risk, count]) => {
+                                const { bg, color } = riskColor(risk);
+                                return (
+                                  <span
+                                    key={risk}
+                                    className="px-2 py-0.5 rounded-full text-xs font-medium"
+                                    style={{ background: bg, color }}
+                                  >
+                                    {RISK_LABELS[risk] ?? risk} × {count}
+                                  </span>
+                                );
+                              })}
+                              <span
+                                className="px-2 py-0.5 rounded-full text-xs font-semibold"
+                                style={{ background: "rgba(23,25,28,0.08)", color: "var(--color-ink)" }}
+                              >
+                                {p.sites_count} site{p.sites_count > 1 ? "s" : ""}
+                              </span>
+                              <span style={{ color: "rgba(23,25,28,0.4)" }}>{isExpanded ? "▲" : "▼"}</span>
+                            </div>
+                          </button>
+
+                          {isExpanded && (
+                            <div className="px-3 pb-3 space-y-1">
+                              <div className="flex items-center justify-between py-1.5">
+                                <button
+                                  onClick={() => toggleAllSites(p.plugin_slug, urls)}
+                                  className="text-xs font-medium cursor-pointer hover:underline"
+                                  style={{ color: "var(--color-deep-teal)" }}
+                                >
+                                  {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                                </button>
+                                {bulkUpdateNotice && (
+                                  <span className="text-xs mr-3" style={{ color: "#b45309" }}>
+                                    {bulkUpdateNotice}
+                                  </span>
+                                )}
+                                <button
+                                  onClick={() => handleBulkUpdate(p.plugin_slug)}
+                                  disabled={selected.size === 0}
+                                  className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                  style={{ background: "var(--color-neon)", color: "var(--color-ink)" }}
+                                >
+                                  Mettre à jour la sélection ({selected.size})
+                                </button>
+                              </div>
+                              {p.sites.map((site) => {
+                                const key = `${site.url}::${p.plugin_slug}`;
+                                const status = updateStatus[key];
+                                const { color } = riskColor(site.risk);
+                                return (
+                                  <label
+                                    key={site.url}
+                                    className="flex items-center gap-2 text-xs py-1 px-2 rounded cursor-pointer"
+                                    style={{ background: "rgba(255,255,255,0.6)" }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={selected.has(site.url)}
+                                      onChange={() => toggleSite(p.plugin_slug, site.url)}
+                                    />
+                                    <span className="flex-1" style={{ color: "var(--color-ink)" }}>
+                                      {site.client}
+                                    </span>
+                                    <span style={{ color }}>{RISK_LABELS[site.risk] ?? site.risk}</span>
+                                    {status && (
+                                      <span
+                                        style={{
+                                          color: status === "success" ? "#087A61" : status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
+                                        }}
+                                      >
+                                        {status === "loading" ? "..." : status === "success" ? "✓ OK" : "✗ Erreur"}
+                                      </span>
+                                    )}
+                                    {status === "error" && p.plugin_slug === "breakdance" && bdZip && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          setSelectedSites((prev) => ({ ...prev, "breakdance-license": new Set([site.url]) }));
+                                          setShowLicenseModal(true);
+                                        }}
+                                        className="px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer"
+                                        style={{ background: "var(--color-ink)", color: "var(--color-white)" }}
+                                      >
+                                        Installer le zip v{bdZip.version}
+                                      </button>
+                                    )}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
-                )}
-              </Card>
+                </Card>
+              )}
 
-              <Card title={`Licences Breakdance à vérifier ou inactives — ${data.breakdance_licenses_a_verifier.length}`}>
-                {data.breakdance_licenses_a_verifier.length === 0 ? (
-                  <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
-                    Aucune licence à vérifier ou inactive.
-                  </p>
-                ) : (
-                  <>
-                    <div className="mb-3 p-3 rounded-lg border text-xs space-y-2" style={{ borderColor: "rgba(23,25,28,0.1)" }}>
-                      <div className="flex items-center justify-between gap-3">
-                        <span style={{ color: "var(--color-ink)" }}>
-                          {bdZip
-                            ? `Zip actuel : Breakdance v${bdZip.version} — ${bdZip.filename} (${formatSize(bdZip.size)}, ${new Date(bdZip.uploaded_at).toLocaleDateString("fr-FR")})`
-                            : "Aucun zip Breakdance uploadé"}
-                        </span>
-                        <label
-                          className="px-3 py-1 rounded-full font-medium cursor-pointer whitespace-nowrap"
-                          style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)", opacity: uploadProgress !== null ? 0.5 : 1 }}
-                        >
-                          {bdZip ? "Remplacer le zip" : "Uploader le zip"}
-                          <input
-                            type="file"
-                            accept=".zip"
-                            className="hidden"
-                            disabled={uploadProgress !== null}
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              e.target.value = "";
-                              if (f) handleUploadZip(f);
-                            }}
-                          />
-                        </label>
-                      </div>
-                      {uploadProgress !== null && (
-                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(23,25,28,0.08)" }}>
-                          <div className="h-full" style={{ width: `${uploadProgress}%`, background: "var(--color-neon)" }} />
-                        </div>
-                      )}
-                      {uploadError && <p style={{ color: "#dc2626" }}>{uploadError}</p>}
-                      {bdError && <p style={{ color: "#dc2626" }}>{bdError}</p>}
-                      {bdAbortReason && (
-                        <p style={{ color: "#b45309" }}>
-                          Installation arrêtée automatiquement : {bdAbortReason}. Les sites restants sont marqués « Ignoré ».
-                        </p>
-                      )}
-                    </div>
-                    {(() => {
-                      const selected = selectedSites["breakdance-license"] ?? new Set<string>();
-                      const urls = data.breakdance_licenses_a_verifier.map((s) => s.url);
-                      const allSelected = urls.length > 0 && urls.every((u) => selected.has(u));
-                      return (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between py-1.5">
-                            <button
-                              onClick={() => toggleAllSites("breakdance-license", urls)}
-                              className="text-xs font-medium cursor-pointer hover:underline"
-                              style={{ color: "var(--color-deep-teal)" }}
+              {tab === "themes" && (
+                <Card title={`Sites avec plus de 3 thèmes WordPress — ${data.sites_trop_de_themes.length}`}>
+                  {data.sites_trop_de_themes.length === 0 ? (
+                    <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                      Aucun site avec un excès de thèmes.
+                    </p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {data.sites_trop_de_themes.map((site) => {
+                        const isExpanded = expandedThemesSite === site.url;
+                        return (
+                          <div key={site.url} className="rounded overflow-hidden" style={{ background: "rgba(23,25,28,0.02)" }}>
+                            <div
+                              className="flex items-center justify-between text-sm py-1.5 px-3 border-l-4 rounded-r"
+                              style={{ borderColor: "#d97706", background: "rgba(217,119,6,0.04)" }}
                             >
-                              {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
-                            </button>
-                            <button
-                              onClick={() => setShowLicenseModal(true)}
-                              disabled={selected.size === 0 || !bdZip || bdRunning}
-                              className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                              style={{ background: "var(--color-neon)", color: "var(--color-ink)" }}
-                            >
-                              {bdRunning ? "Installation en cours…" : `Installer + activer sur la sélection (${selected.size})`}
-                            </button>
-                          </div>
-                          {data.breakdance_licenses_a_verifier.map((site) => {
-                            const job = bdJob[site.url];
-                            const outdated = !!bdZip && !!site.plugin_version && site.plugin_version !== bdZip.version;
-                            return (
-                              <label
-                                key={site.url}
-                                className="flex items-center gap-2 text-xs py-1 px-2 rounded cursor-pointer"
-                                style={{ background: "rgba(255,255,255,0.6)" }}
+                              <a
+                                href={site.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-medium hover:underline"
+                                style={{ color: "var(--color-deep-teal)" }}
                               >
-                                <input
-                                  type="checkbox"
-                                  checked={selected.has(site.url)}
-                                  onChange={() => toggleSite("breakdance-license", site.url)}
-                                />
-                                <span className="flex-1" style={{ color: "var(--color-ink)" }}>
-                                  {site.client}
-                                </span>
-                                <span style={{ color: site.valid === false ? "#dc2626" : "rgba(23,25,28,0.5)" }}>
-                                  {site.valid === false ? "✗ Inactive" : "⚠ À vérifier"}
-                                </span>
-                                {site.plugin_version && (
-                                  <span style={{ color: outdated ? "#b45309" : "rgba(23,25,28,0.5)" }}>
-                                    v{site.plugin_version}
-                                    {outdated ? " (ancienne)" : ""}
-                                  </span>
-                                )}
-                                {job && (
-                                  <span
-                                    title={job.message}
-                                    style={{
-                                      color: job.status === "done" ? "#087A61" : job.status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
-                                    }}
-                                  >
-                                    {BREAKDANCE_STATUS_LABEL[job.status]}
-                                    {job.status === "error" && job.message ? ` — ${job.message}` : ""}
-                                    {job.status === "done" && job.new_version ? ` (v${job.new_version})` : ""}
-                                  </span>
-                                )}
-                              </label>
-                            );
-                          })}
+                                {site.client}
+                              </a>
+                              <button
+                                onClick={() => setExpandedThemesSite(isExpanded ? null : site.url)}
+                                className="flex items-center gap-2 cursor-pointer"
+                                style={{ color: "#d97706" }}
+                              >
+                                {site.themes_count} thèmes installés
+                                <span style={{ color: "rgba(23,25,28,0.4)" }}>{isExpanded ? "▲" : "▼"}</span>
+                              </button>
+                            </div>
+                            {isExpanded && (() => {
+                              const deletableSlugs = site.themes
+                                .filter((t) => !t.is_active && !t.is_parent_of_active)
+                                .map((t) => t.slug);
+                              const selected = selectedSites[site.url] ?? new Set<string>();
+                              const allSelected = deletableSlugs.length > 0 && deletableSlugs.every((s) => selected.has(s));
+                              return (
+                                <div className="px-3 pb-3 pt-2 space-y-1">
+                                  {deletableSlugs.length > 0 && (
+                                    <div className="flex items-center justify-between py-1.5">
+                                      <button
+                                        onClick={() => toggleAllSites(site.url, deletableSlugs)}
+                                        className="text-xs font-medium cursor-pointer hover:underline"
+                                        style={{ color: "var(--color-deep-teal)" }}
+                                      >
+                                        {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                                      </button>
+                                      <button
+                                        onClick={() => handleBulkDeleteThemes(site.url)}
+                                        disabled={selected.size === 0}
+                                        className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                        style={{ background: "rgba(220,38,38,0.1)", color: "#dc2626" }}
+                                      >
+                                        Supprimer la sélection ({selected.size})
+                                      </button>
+                                    </div>
+                                  )}
+                                  {site.themes.map((theme) => {
+                                    const key = `${site.url}::theme::${theme.slug}`;
+                                    const state = updateStatus[key];
+                                    const canDelete = !theme.is_active && !theme.is_parent_of_active;
+                                    return (
+                                      <label
+                                        key={key}
+                                        className="flex items-center gap-2 text-xs py-1.5 px-3 border-l-4 rounded-r"
+                                        style={{
+                                          color: "rgba(23,25,28,0.8)",
+                                          borderColor: theme.is_active ? "#10b981" : "rgba(23,25,28,0.15)",
+                                          background: theme.is_active ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.6)",
+                                          cursor: canDelete ? "pointer" : "default",
+                                        }}
+                                      >
+                                        {canDelete && (
+                                          <input
+                                            type="checkbox"
+                                            checked={selected.has(theme.slug)}
+                                            onChange={() => toggleSite(site.url, theme.slug)}
+                                          />
+                                        )}
+                                        <span className="flex-1">
+                                          {theme.name} ({theme.version}){theme.is_active && " — actif"}
+                                          {theme.is_parent_of_active && " — parent du thème actif"}
+                                        </span>
+                                        {state && (
+                                          <span
+                                            style={{
+                                              color: state === "success" ? "#087A61" : state === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
+                                            }}
+                                          >
+                                            {state === "loading" ? "..." : state === "success" ? "✓ Supprimé" : "✗ Erreur"}
+                                          </span>
+                                        )}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </Card>
+              )}
+
+              {tab === "breakdance" && (
+                <Card title={`Licences Breakdance à vérifier ou inactives — ${data.breakdance_licenses_a_verifier.length}`}>
+                  {data.breakdance_licenses_a_verifier.length === 0 ? (
+                    <p className="text-sm" style={{ color: "rgba(23,25,28,0.5)" }}>
+                      Aucune licence à vérifier ou inactive.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="mb-3 p-3 rounded-lg border text-xs space-y-2" style={{ borderColor: "rgba(23,25,28,0.1)" }}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span style={{ color: "var(--color-ink)" }}>
+                            {bdZip
+                              ? `Zip actuel : Breakdance v${bdZip.version} — ${bdZip.filename} (${formatSize(bdZip.size)}, ${new Date(bdZip.uploaded_at).toLocaleDateString("fr-FR")})`
+                              : "Aucun zip Breakdance uploadé"}
+                          </span>
+                          <label
+                            className="px-3 py-1 rounded-full font-medium cursor-pointer whitespace-nowrap"
+                            style={{ background: "rgba(23,25,28,0.06)", color: "var(--color-ink)", opacity: uploadProgress !== null ? 0.5 : 1 }}
+                          >
+                            {bdZip ? "Remplacer le zip" : "Uploader le zip"}
+                            <input
+                              type="file"
+                              accept=".zip"
+                              className="hidden"
+                              disabled={uploadProgress !== null}
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                e.target.value = "";
+                                if (f) handleUploadZip(f);
+                              }}
+                            />
+                          </label>
                         </div>
-                      );
-                    })()}
-                  </>
-                )}
-              </Card>
+                        {uploadProgress !== null && (
+                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(23,25,28,0.08)" }}>
+                            <div className="h-full" style={{ width: `${uploadProgress}%`, background: "var(--color-neon)" }} />
+                          </div>
+                        )}
+                        {uploadError && <p style={{ color: "#dc2626" }}>{uploadError}</p>}
+                        {bdError && <p style={{ color: "#dc2626" }}>{bdError}</p>}
+                        {bdAbortReason && (
+                          <p style={{ color: "#b45309" }}>
+                            Installation arrêtée automatiquement : {bdAbortReason}. Les sites restants sont marqués « Ignoré ».
+                          </p>
+                        )}
+                      </div>
+                      {(() => {
+                        const selected = selectedSites["breakdance-license"] ?? new Set<string>();
+                        const urls = data.breakdance_licenses_a_verifier.map((s) => s.url);
+                        const allSelected = urls.length > 0 && urls.every((u) => selected.has(u));
+                        return (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between py-1.5">
+                              <button
+                                onClick={() => toggleAllSites("breakdance-license", urls)}
+                                className="text-xs font-medium cursor-pointer hover:underline"
+                                style={{ color: "var(--color-deep-teal)" }}
+                              >
+                                {allSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                              </button>
+                              <button
+                                onClick={() => setShowLicenseModal(true)}
+                                disabled={selected.size === 0 || !bdZip || bdRunning}
+                                className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                style={{ background: "var(--color-neon)", color: "var(--color-ink)" }}
+                              >
+                                {bdRunning ? "Installation en cours…" : `Installer + activer sur la sélection (${selected.size})`}
+                              </button>
+                            </div>
+                            {data.breakdance_licenses_a_verifier.map((site) => {
+                              const job = bdJob[site.url];
+                              const outdated = !!bdZip && !!site.plugin_version && site.plugin_version !== bdZip.version;
+                              return (
+                                <label
+                                  key={site.url}
+                                  className="flex items-center gap-2 text-xs py-1 px-2 rounded cursor-pointer"
+                                  style={{ background: "rgba(255,255,255,0.6)" }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selected.has(site.url)}
+                                    onChange={() => toggleSite("breakdance-license", site.url)}
+                                  />
+                                  <span className="flex-1" style={{ color: "var(--color-ink)" }}>
+                                    {site.client}
+                                  </span>
+                                  <span style={{ color: site.valid === false ? "#dc2626" : "rgba(23,25,28,0.5)" }}>
+                                    {site.valid === false ? "✗ Inactive" : "⚠ À vérifier"}
+                                  </span>
+                                  {site.plugin_version && (
+                                    <span style={{ color: outdated ? "#b45309" : "rgba(23,25,28,0.5)" }}>
+                                      v{site.plugin_version}
+                                      {outdated ? " (ancienne)" : ""}
+                                    </span>
+                                  )}
+                                  {job && (
+                                    <span
+                                      title={job.message}
+                                      style={{
+                                        color: job.status === "done" ? "#087A61" : job.status === "error" ? "#dc2626" : "rgba(23,25,28,0.5)",
+                                      }}
+                                    >
+                                      {BREAKDANCE_STATUS_LABEL[job.status]}
+                                      {job.status === "error" && job.message ? ` — ${job.message}` : ""}
+                                      {job.status === "done" && job.new_version ? ` (v${job.new_version})` : ""}
+                                    </span>
+                                  )}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                    </>
+                  )}
+                </Card>
+              )}
             </>
           )}
         </div>
