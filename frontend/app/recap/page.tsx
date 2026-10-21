@@ -425,7 +425,18 @@ export default function RecapPage() {
     axios
       .get<RecapData>(`${API_URL}/recap`)
       .then(({ data }) => {
-        setData(data);
+        // Un backend plus ancien peut ne pas renvoyer toutes les listes : on les complète
+        // plutôt que de faire planter la page.
+        setData({
+          ...data,
+          ia_faible: data.ia_faible ?? [],
+          http_erreur: data.http_erreur ?? [],
+          plugin_frequency: data.plugin_frequency ?? [],
+          php_obsolete: data.php_obsolete ?? [],
+          methode_counts: data.methode_counts ?? {},
+          breakdance_licenses_a_verifier: data.breakdance_licenses_a_verifier ?? [],
+          sites_trop_de_themes: data.sites_trop_de_themes ?? [],
+        });
       })
       .catch(() => {
         setError(
