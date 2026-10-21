@@ -18,6 +18,7 @@ import json
 from dotenv import load_dotenv
 
 from services.config import RESULTS_FILE, LAST_AUDIT_FILE
+from services.json_store import results_lock, write_json_atomic
 from services import capture_settings as cs
 from services.agent_client import (
     connect_to_agent,
@@ -558,8 +559,8 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
     # Sauvegarde résultats JSON local
     if json_results:
         try:
-            with open(RESULTS_FILE, "w", encoding="utf-8") as f:
-                json.dump(json_results, f, ensure_ascii=False, indent=2)
+            with results_lock:
+                write_json_atomic(RESULTS_FILE, json_results)
             print(f"✅ Résultats sauvegardés dans {RESULTS_FILE} ({len(json_results)} sites)")
         except Exception as e:
             print(f"⚠️  Erreur écriture results.json: {e}")
