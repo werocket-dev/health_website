@@ -1,0 +1,62 @@
+import ipaddress
+import json
+import os
+import socket
+from urllib.parse import urlparse
+
+from .config import RESULTS_FILE
+
+
+class UrlRejected(ValueError):
+    pass
+
+
+def host_of(url: str) -> str:
+    """Hôte normalisé (minuscules, sans « www. ») : https://www.x.fr et x.fr sont le même site."""
+    raw = (url or "").strip()
+    if "://" not in raw:
+        raw = "https://" + raw
+    host = (urlparse(raw).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _check_public(url: str) -> None:
+    raw = (url or "").strip()
+    parsed = urlparse(raw if "://" in raw else "https://" + raw)
+    if parsed.scheme not in ("http", "https"):
+        raise UrlRejected("URL invalide : seuls http et https sont acceptés")
+    if parsed.username or parsed.password:
+        raise UrlRejected("URL invalide : identifiants dans l'URL refusés")
+    host = parsed.hostname
+    if not host:
+        raise UrlRejected("URL invalide : hôte manquant")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return  # Ne résout pas : rien d'interne à atteindre, l'appel échouera de lui-même.
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise UrlRejected("URL refusée : l'hôte pointe vers une adresse privée ou locale")
+
+
+def _known_hosts() -> set[str] | None:
+    try:
+        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return None
+    hosts = {host_of(e.get("url", "")) for e in entries if isinstance(e, dict)}
+    hosts.discard("")
+    return hosts or None
+
+
+def validate_site_url(url: str, require_known: bool = True) -> None:
+    """Refuse les URLs qui ne sont pas un site public. Avec require_known, n'accepte
+    que les sites déjà audités (results.json) : le backend ne signe et n'envoie des
+    ordres qu'à des sites connus. Sans results.json lisible, seul le contrôle d'IP s'applique."""
+    _check_public(url)
+    if require_known:
+        known = _known_hosts()
+        if known is not None and host_of(url) not in known:
+            raise UrlRejected("Site inconnu : il doit d'abord être audité")

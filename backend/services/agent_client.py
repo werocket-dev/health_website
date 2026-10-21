@@ -1,6 +1,7 @@
 import os
 import time
 import json
+from datetime import datetime, timezone
 import requests
 from nacl.signing import SigningKey
 from dotenv import load_dotenv
@@ -583,6 +584,8 @@ def refresh_site_in_results(url: str) -> dict:
                 entry["methode"] = "Agent"
                 entry["themes"] = parsed["themes_list"]
                 entry["licenses"] = parsed["licenses"]
+                # Lu par la fin d'audit : un rafraîchissement fait pendant l'audit est plus récent que ses résultats.
+                entry["refreshed_at"] = datetime.now(timezone.utc).isoformat()
                 updated = True
                 break
 

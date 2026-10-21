@@ -136,6 +136,8 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
     Returns:
         dict: Statistiques de l'audit avec détails par site
     """
+    audit_started_at = datetime.now(timezone.utc).isoformat()
+
     # 1. Récupération des sites à auditer
     if sites_list is None:
         if random_sample:
@@ -560,6 +562,19 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
     if json_results:
         try:
             with results_lock:
+                # Un site rafraîchi (mise à jour de plugin, activation de licence…) pendant
+                # l'audit est plus récent que ce que l'audit a mesuré avant : on le garde.
+                try:
+                    with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+                        current = {e.get("url"): e for e in json.load(f) if isinstance(e, dict)}
+                except (OSError, ValueError):
+                    current = {}
+                json_results = [
+                    current[r["url"]]
+                    if (current.get(r["url"]) or {}).get("refreshed_at", "") > audit_started_at
+                    else r
+                    for r in json_results
+                ]
                 write_json_atomic(RESULTS_FILE, json_results)
             print(f"✅ Résultats sauvegardés dans {RESULTS_FILE} ({len(json_results)} sites)")
         except Exception as e:

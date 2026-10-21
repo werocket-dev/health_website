@@ -14,7 +14,7 @@ import secrets
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -33,7 +33,7 @@ from audit_engine import (
     LAST_AUDIT_FILE,
 )
 from services.pocketbase_client import is_php_obsolete
-from services import breakdance_zip, job_guard
+from services import breakdance_zip, job_guard, url_guard
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -44,7 +44,7 @@ if _sentry_dsn:
     sentry_sdk.init(
         dsn=_sentry_dsn,
         integrations=[StarletteIntegration(), FastApiIntegration()],
-        traces_sample_rate=1.0,
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
         environment=os.getenv("ENVIRONMENT", "development"),
     )
     print("✅ Sentry activé")
@@ -53,8 +53,17 @@ if _sentry_dsn:
 # protège l'API contre un accès direct par quiconque trouve l'URL publique.
 _BACKEND_API_KEY = os.getenv("BACKEND_API_KEY")
 
+def _check_site_url(url: str, require_known: bool = True):
+    """Le backend signe et envoie des ordres à l'URL reçue : on refuse tout ce qui n'est
+    pas un site public connu (SSRF vers localhost, métadonnées cloud, réseau interne)."""
+    try:
+        url_guard.validate_site_url(url, require_known=require_known)
+    except url_guard.UrlRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 def require_api_key(x_api_key: str = Header(default="")):
-    if not _BACKEND_API_KEY or not secrets.compare_digest(x_api_key, _BACKEND_API_KEY):
+    # Comparaison en octets : compare_digest lève une TypeError sur du non-ASCII (500 au lieu de 401).
+    if not _BACKEND_API_KEY or not secrets.compare_digest(x_api_key.encode("utf-8"), _BACKEND_API_KEY.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Clé API manquante ou invalide")
 
 # État de progression de l'audit en cours (partagé entre background task et API)
@@ -346,6 +355,7 @@ async def launch_scan(
     limit = None
     random_sample = False
     if scan_request and scan_request.url:
+        _check_site_url(scan_request.url, require_known=False)  # nouveau site possible : seul le contrôle d'IP
         sites_list = [{"Client": scan_request.client_name, "URL": scan_request.url}]
     else:
         sites_list = None  # Le moteur lira les sites actifs depuis PocketBase
@@ -364,8 +374,8 @@ async def launch_scan(
 @app.get("/api/results", response_model=PaginatedResults, dependencies=[Depends(require_api_key)])
 async def get_results(
     request: Request,
-    page: int = 1,
-    per_page: int = 25,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=200),
     search: str = "",
     ia_status: str = "",
     maj: str = "",
@@ -431,6 +441,7 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
     Déclenche la mise à jour d'un plugin spécifique via l'Agent WordPress.
     """
     print(f"[audit] /api/update-plugin from {request.client.host} url={body.url} plugin={body.plugin_slug}")
+    _check_site_url(body.url)
     import asyncio
     result = await asyncio.to_thread(update_plugin_via_agent, body.url, body.plugin_slug)
     if result.get('success'):
@@ -453,6 +464,7 @@ async def delete_theme(request: Request, body: ThemeDeleteRequest):
     Supprime un thème WordPress inutilisé via l'Agent.
     """
     print(f"[audit] /api/delete-theme from {request.client.host} url={body.url} theme={body.theme_slug}")
+    _check_site_url(body.url)
     import asyncio
     result = await asyncio.to_thread(delete_theme_via_agent, body.url, body.theme_slug)
     if result.get('success'):
@@ -469,6 +481,7 @@ async def activate_license(request: Request, body: LicenseActivateRequest):
     Active/revalide la licence Breakdance sur un site via l'Agent.
     """
     print(f"[audit] /api/activate-license from {request.client.host} url={body.url}")  # pas de license_key ici non plus
+    _check_site_url(body.url)
     import asyncio
     result = await asyncio.to_thread(activate_license_via_agent, body.url, body.license_key)
     if result.get('success'):
@@ -485,6 +498,7 @@ async def update_core(request: Request, body: CoreUpdateRequest):
     Déclenche la mise à jour du core WordPress via l'Agent WordPress.
     """
     print(f"[audit] /api/update-core from {request.client.host} url={body.url}")
+    _check_site_url(body.url)
     import asyncio
     result = await asyncio.to_thread(update_core_via_agent, body.url)
     if result.get('success'):
@@ -643,6 +657,8 @@ async def breakdance_install_and_activate(request: Request, body: BreakdanceInst
     sites = list({s.url: s for s in body.sites}.values())
     if not sites:
         raise HTTPException(status_code=400, detail="Aucun site sélectionné")
+    for site in sites:
+        _check_site_url(site.url)
 
     print(f"[audit] /api/breakdance/install-and-activate from {request.client.host} sites={len(sites)}")
     job_id = uuid.uuid4().hex

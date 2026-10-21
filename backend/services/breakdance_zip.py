@@ -18,6 +18,9 @@ ZIP_FILE = os.path.join(ZIP_DIR, "breakdance.zip")
 META_FILE = os.path.join(ZIP_DIR, "meta.json")
 
 MAX_ZIP_BYTES = 200 * 1024 * 1024
+# Plafond de la taille décompressée (zip bomb) : le plafond ci-dessus ne couvre que le compressé.
+MAX_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_ZIP_ENTRIES = 20000
 TOKEN_TTL_SECONDS = 600
 
 # Mêmes règles que l'agent WP (/install-plugin-zip) : uniquement breakdance/,
@@ -47,13 +50,18 @@ def _validate_and_read_version(path: str) -> str:
         names = zf.namelist()
         if not names:
             raise ZipError("Archive vide")
+        if len(names) > MAX_ZIP_ENTRIES:
+            raise ZipError("Archive refusée : trop de fichiers")
+        if sum(i.file_size for i in zf.infolist()) > MAX_UNCOMPRESSED_BYTES:
+            raise ZipError("Archive refusée : taille décompressée excessive")
         for name in names:
             if not name.startswith("breakdance/") or ".." in name:
                 raise ZipError("Le zip doit contenir uniquement le dossier breakdance/")
         if _MAIN_FILE not in names:
             raise ZipError("breakdance/plugin.php absent du zip")
         # L'en-tête du plugin est dans les premiers Ko.
-        header = zf.read(_MAIN_FILE)[:8192].decode("utf-8", errors="replace")
+        with zf.open(_MAIN_FILE) as f:
+            header = f.read(8192).decode("utf-8", errors="replace")
     match = re.search(r"^[ \t/*#@]*Version:[ \t]*([^\s*]+)", header, re.MULTILINE | re.IGNORECASE)
     if not match:
         raise ZipError("Version introuvable dans l'en-tête de breakdance/plugin.php")
