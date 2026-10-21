@@ -591,4 +591,5 @@ def refresh_site_in_results(url: str) -> dict:
     except Exception as e:
         return {'success': False, 'error': f'Écriture results.json échouée: {e}'}
 
-    return {'success': True, 'updates_count': parsed["updates_info"]["count_updates"]}
+    return {'success': True, 'updates_count': parsed["updates_info"]["count_updates"],
+            'updates_needed': parsed["updates_info"]["updates_needed"]}

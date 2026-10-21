@@ -437,6 +437,12 @@ async def update_plugin(request: Request, body: PluginUpdateRequest):
         refresh = await asyncio.to_thread(refresh_site_in_results, body.url)
         if not refresh.get('success'):
             print(f"[audit] ⚠️  results.json non rafraîchi pour {body.url}: {refresh.get('error')}")
+        # L'agent répond « Déjà à jour » (succès) quand WordPress ne peut pas télécharger
+        # la mise à jour (ex. licence Breakdance refusée) : la vérité, c'est que le plugin
+        # n'a plus de mise à jour en attente une fois le site relu.
+        elif any(u.split('||', 1)[0] == body.plugin_slug for u in refresh.get('updates_needed', [])):
+            print(f"[audit] ❌ update-plugin sans effet pour {body.url} ({body.plugin_slug}): mise à jour toujours en attente")
+            raise HTTPException(status_code=400, detail="Mise à jour non appliquée (toujours en attente sur le site)")
         return PluginUpdateResponse(success=True, message=result.get('message', 'Plugin mis à jour avec succès'))
     print(f"[audit] ❌ update-plugin échoué pour {body.url} ({body.plugin_slug}): {result.get('error')}")
     raise HTTPException(status_code=400, detail=result.get('error', 'Erreur inconnue'))

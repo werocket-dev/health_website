@@ -568,6 +568,19 @@ export default function RecapPage() {
                                       {status === "loading" ? "..." : status === "success" ? "✓ OK" : "✗ Erreur"}
                                     </span>
                                   )}
+                                  {status === "error" && p.plugin_slug === "breakdance" && bdZip && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        setSelectedSites((prev) => ({ ...prev, "breakdance-license": new Set([site.url]) }));
+                                        setShowLicenseModal(true);
+                                      }}
+                                      className="px-2 py-0.5 rounded-full text-xs font-medium cursor-pointer"
+                                      style={{ background: "var(--color-ink)", color: "var(--color-white)" }}
+                                    >
+                                      Installer le zip v{bdZip.version}
+                                    </button>
+                                  )}
                                 </label>
                               );
                             })}
