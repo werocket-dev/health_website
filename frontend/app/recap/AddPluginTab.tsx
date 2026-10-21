@@ -271,11 +271,17 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
             {sitesError}
           </p>
         )}
+        {!sitesError && sites.length === 0 && (
+          <p className="text-sm mb-3" style={{ color: "#b45309" }}>
+            Aucun site connu : la liste vient du dernier audit (results.json) et le backend n&apos;en a pas. Lance un audit
+            complet, ou vérifie que ce front est branché sur le bon backend.
+          </p>
+        )}
         <input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Rechercher un site (nom, URL)…"
+          placeholder="Filtrer les sites (nom ou URL)…"
           className="w-full mb-3 px-3 py-2 rounded-lg border text-sm"
           style={{ borderColor: "rgba(23,25,28,0.15)", color: "var(--color-ink)" }}
         />
@@ -314,7 +320,7 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
               <span style={mutedText}>{site.url.replace(/^https?:\/\//, "")}</span>
             </label>
           ))}
-          {filteredSites.length === 0 && (
+          {filteredSites.length === 0 && sites.length > 0 && (
             <p className="text-sm py-2" style={mutedText}>
               Aucun site ne correspond.
             </p>
