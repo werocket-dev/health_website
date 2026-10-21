@@ -366,7 +366,7 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
         }
 
         endpoint = f"{final_base_url}/wp-json/werocket/v1/install-plugin-zip"
-        print(f"      📦 Installation zip Breakdance sur : {endpoint}")  # l'URL du zip contient un token : ne pas la logger
+        print(f"      📦 Installation zip plugin sur : {endpoint}")  # l'URL du zip contient un token : ne pas la logger
 
         response = session.post(endpoint, json=payload, headers=headers, timeout=300, verify=True)
 
@@ -379,10 +379,13 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
             if data.get('success'):
                 return {
                     'success': True,
-                    'message': data.get('message', 'Breakdance installé'),
+                    'message': data.get('message', 'Plugin installé'),
                     'old_version': data.get('old_version'),
                     'new_version': data.get('new_version'),
                     'was_active': data.get('was_active'),
+                    'installed': data.get('installed'),
+                    'is_active': data.get('is_active'),
+                    'plugin': data.get('plugin'),
                 }
             return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
         if response.status_code == 404 and not (isinstance(data, dict) and data.get('code') not in (None, 'rest_no_route')):

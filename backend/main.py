@@ -33,7 +33,7 @@ from audit_engine import (
     LAST_AUDIT_FILE,
 )
 from services.pocketbase_client import is_php_obsolete
-from services import breakdance_zip, job_guard, url_guard
+from services import breakdance_zip, job_guard, plugin_zip, url_guard
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -651,8 +651,8 @@ async def breakdance_install_and_activate(request: Request, body: BreakdanceInst
         breakdance_zip.build_download_url("0" * 64)  # échoue tôt si PUBLIC_BACKEND_URL / secret manquants
     except breakdance_zip.ZipError as e:
         raise HTTPException(status_code=500, detail=str(e))
-    if any(not j["finished"] for j in _bd_jobs.values()):
-        raise HTTPException(status_code=409, detail="Une installation Breakdance est déjà en cours")
+    if any(not j["finished"] for j in list(_bd_jobs.values()) + list(_pz_jobs.values())):
+        raise HTTPException(status_code=409, detail="Une installation est déjà en cours")
 
     sites = list({s.url: s for s in body.sites}.values())
     if not sites:
@@ -679,6 +679,176 @@ async def breakdance_install_and_activate(request: Request, body: BreakdanceInst
 @app.get("/api/breakdance/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def breakdance_job_status(job_id: str):
     job = _bd_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job introuvable (backend redémarré ?)")
+    return job
+
+# ============================================================================
+# AJOUT D'UN PLUGIN À DISTANCE (zip quelconque)
+# ============================================================================
+
+@app.get("/api/sites", dependencies=[Depends(require_api_key)])
+def list_sites():
+    """Sites connus (results.json), pour choisir où installer un plugin."""
+    try:
+        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return {"sites": []}
+    sites = [{"client": e.get("client", ""), "url": e["url"]} for e in entries if isinstance(e, dict) and e.get("url")]
+    return {"sites": sorted(sites, key=lambda s: s["client"].lower())}
+
+@app.post("/api/plugins/zip", dependencies=[Depends(require_api_key)])
+async def upload_plugin_zip(request: Request):
+    """Reçoit un zip de plugin en corps brut (nom dans X-Filename), le valide puis le stocke."""
+    import tempfile
+    filename = request.headers.get("x-filename", "plugin.zip")
+    fd, tmp_path = tempfile.mkstemp(dir=plugin_zip.PLUGINS_DIR, suffix=".upload")
+    size = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > plugin_zip.MAX_ZIP_BYTES:
+                    raise HTTPException(status_code=413, detail="Zip trop volumineux (max 200 Mo)")
+                f.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Fichier vide")
+        try:
+            meta = plugin_zip.store_zip(tmp_path, filename)
+        except plugin_zip.ZipError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    print(f"[audit] zip plugin enregistré : {meta['slug']} v{meta['version']} ({meta['size']} octets)")
+    return meta
+
+@app.get("/api/plugins/zips", dependencies=[Depends(require_api_key)])
+def list_plugin_zips():
+    return {"zips": plugin_zip.list_zips()}
+
+@app.post("/api/plugins/zip/{slug}/delete", dependencies=[Depends(require_api_key)])
+def delete_plugin_zip(slug: str):
+    try:
+        deleted = plugin_zip.delete_zip(slug)
+    except plugin_zip.ZipError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Zip introuvable")
+    print(f"[audit] zip plugin supprimé : {slug}")
+    return {"success": True}
+
+@app.get("/dl/plugin/{slug}/{token}")
+def download_plugin_zip(slug: str, token: str):
+    """Public (l'agent WP n'envoie aucun header) : protégé uniquement par le token HMAC à durée limitée."""
+    if not plugin_zip.verify_token(slug, token):
+        raise HTTPException(status_code=403, detail="Lien invalide ou expiré")
+    return FileResponse(plugin_zip.zip_path(slug), media_type="application/zip", filename=f"{slug}.zip")
+
+class PluginInstallRequest(BaseModel):
+    slug: str
+    urls: List[str]
+
+_pz_jobs: dict = {}
+
+async def _run_plugin_install_job(job_id: str, slug: str, urls: List[str]):
+    import asyncio, random
+    job = _pz_jobs[job_id]
+    sem = asyncio.Semaphore(_BD_CONCURRENCY)
+    guard = job_guard.JobGuard()
+
+    async def one(url: str):
+        state = job["sites"][url]
+        async with sem:
+            try:
+                ip = await asyncio.to_thread(job_guard.resolve_ip, url)
+                skip = guard.skip_reason(ip)
+                if skip:
+                    state.update(status="skipped", message=skip)
+                    job["aborted_reason"] = guard.aborted_reason
+                    return
+
+                meta = plugin_zip.get_meta(slug)
+                if not meta:
+                    raise RuntimeError("Zip du plugin introuvable (supprimé ?)")
+                state["status"] = "installing"
+                # Lien généré au moment de traiter CE site : il n'expire pas pendant l'attente.
+                zip_url = plugin_zip.build_download_url(slug, meta["sha256"])
+                inst = await asyncio.to_thread(install_plugin_zip, url, zip_url, meta["sha256"])
+                if not inst.get("success"):
+                    msg = inst.get("error", "Erreur inconnue")
+                    guard.record(ip, job_guard.classify_error(msg))
+                    job["aborted_reason"] = guard.aborted_reason
+                    print(f"[audit] ❌ installation {slug} échouée pour {url}: {msg}")
+                    state.update(status="error", message=msg)
+                    return
+                guard.record(ip, "ok")
+
+                refresh = await asyncio.to_thread(refresh_site_in_results, url)
+                if not refresh.get("success"):
+                    print(f"[audit] ⚠️  results.json non rafraîchi pour {url}: {refresh.get('error')}")
+                state.update(
+                    status="done",
+                    message=inst.get("message", "Installé"),
+                    installed=inst.get("installed"),
+                    old_version=inst.get("old_version"),
+                    new_version=inst.get("new_version"),
+                    is_active=inst.get("is_active"),
+                )
+            except Exception as e:
+                print(f"[audit] ❌ installation {slug} : erreur inattendue pour {url}: {e}")
+                state.update(status="error", message=str(e)[:200])
+            finally:
+                await asyncio.sleep(random.uniform(*_BD_PACE_SECONDS))
+
+    try:
+        await asyncio.gather(*(one(u) for u in urls))
+    finally:
+        job["finished"] = True
+
+@app.post("/api/plugins/install", dependencies=[Depends(require_api_key)])
+async def install_plugin_on_sites(request: Request, body: PluginInstallRequest):
+    """Installe (ou met à jour) le zip stocké sur les sites choisis, en arrière-plan. Suivi par
+    GET /api/plugins/jobs/{job_id}. Un plugin déjà présent est remplacé en gardant son état
+    d'activation ; une nouvelle installation est activée."""
+    import asyncio, uuid
+    meta = plugin_zip.get_meta(body.slug)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Zip introuvable : uploade-le d'abord")
+    try:
+        plugin_zip.build_download_url(body.slug, "0" * 64)  # échoue tôt : PUBLIC_BACKEND_URL absent ou non HTTPS
+    except plugin_zip.ZipError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if any(not j["finished"] for j in list(_pz_jobs.values()) + list(_bd_jobs.values())):
+        raise HTTPException(status_code=409, detail="Une installation est déjà en cours")
+
+    urls = list(dict.fromkeys(body.urls))
+    if not urls:
+        raise HTTPException(status_code=400, detail="Aucun site sélectionné")
+    for url in urls:
+        _check_site_url(url)
+
+    print(f"[audit] /api/plugins/install from {request.client.host} plugin={body.slug} v{meta['version']} sites={len(urls)}")
+    job_id = uuid.uuid4().hex
+    _pz_jobs[job_id] = {
+        "finished": False,
+        "aborted_reason": None,
+        "slug": body.slug,
+        "sites": {u: {"status": "pending"} for u in urls},
+    }
+    for old in list(_pz_jobs)[:-10]:
+        if _pz_jobs[old]["finished"]:
+            del _pz_jobs[old]
+
+    task = asyncio.create_task(_run_plugin_install_job(job_id, body.slug, urls))
+    _bd_tasks.add(task)
+    task.add_done_callback(_bd_tasks.discard)
+    return {"job_id": job_id}
+
+@app.get("/api/plugins/jobs/{job_id}", dependencies=[Depends(require_api_key)])
+def plugin_install_job_status(job_id: str):
+    job = _pz_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job introuvable (backend redémarré ?)")
     return job

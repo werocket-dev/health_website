@@ -4,6 +4,8 @@ import axios from "axios";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LogoutButton } from "@/components/layout/LogoutButton";
+import { Card } from "@/components/ui/Card";
+import { AddPluginTab } from "./AddPluginTab";
 
 const API_URL = "/api/backend";
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -144,9 +146,9 @@ function scoreLabel(key: string): string {
   return key;
 }
 
-type RecapTab = "problemes" | "plugins" | "themes" | "breakdance";
+type RecapTab = "problemes" | "plugins" | "themes" | "breakdance" | "ajout";
 type ProblemTab = "erreur" | "ia" | "php";
-const RECAP_TABS: RecapTab[] = ["problemes", "plugins", "themes", "breakdance"];
+const RECAP_TABS: RecapTab[] = ["problemes", "plugins", "themes", "breakdance", "ajout"];
 
 function StatTile({
   label,
@@ -187,24 +189,6 @@ function StatTile({
   ) : (
     <div className={className} style={style}>
       {content}
-    </div>
-  );
-}
-
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div
-      className="rounded-2xl border shadow-sm p-6"
-      style={{
-        borderColor: "rgba(23,25,28,0.08)",
-        background: "var(--color-white)",
-        boxShadow: "0 16px 40px -30px rgba(0,0,0,0.35)",
-      }}
-    >
-      <h2 className="text-sm font-semibold uppercase tracking-wide mb-4" style={{ color: "rgba(23,25,28,0.5)" }}>
-        {title}
-      </h2>
-      {children}
     </div>
   );
 }
@@ -512,7 +496,8 @@ export default function RecapPage() {
                   ["plugins", "Plugins", data.plugin_frequency.length],
                   ["themes", "Thèmes", data.sites_trop_de_themes.length],
                   ["breakdance", "Breakdance", data.breakdance_licenses_a_verifier.length],
-                ] as [RecapTab, string, number][]).map(([id, label, count]) => (
+                  ["ajout", "Ajouter un plugin", null],
+                ] as [RecapTab, string, number | null][]).map(([id, label, count]) => (
                   <button
                     key={id}
                     onClick={() => goTab(id)}
@@ -523,11 +508,11 @@ export default function RecapPage() {
                         : { background: "rgba(23,25,28,0.06)", color: "var(--color-ink)" }
                     }
                   >
-                    {label} <span style={{ opacity: 0.6 }}>{count}</span>
+                    {label}
+                    {count !== null && <span style={{ opacity: 0.6 }}> {count}</span>}
                   </button>
                 ))}
               </div>
-
 
               {tab === "problemes" && (
                 <>
@@ -896,6 +881,8 @@ export default function RecapPage() {
                   )}
                 </Card>
               )}
+
+              {tab === "ajout" && <AddPluginTab onInstalled={() => setRetryCount((n) => n + 1)} />}
 
               {tab === "breakdance" && (
                 <Card title={`Licences Breakdance à vérifier ou inactives — ${data.breakdance_licenses_a_verifier.length}`}>

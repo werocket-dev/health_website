@@ -64,6 +64,8 @@ Le plus simple est de lancer un audit sur un site depuis l'interface : la métho
 - **Mises à jour à distance** : onglet Récap (plugins, cœur, thèmes). Après chaque action, le site est relu et son entrée de `results.json` rafraîchie.
 - **Breakdance** : upload d'un zip dans le récap, puis « Installer + activer » (`POST /api/breakdance/install-and-activate`). L'agent télécharge le zip sur `PUBLIC_BACKEND_URL/dl/breakdance/{token}` (lien signé, 10 minutes) et vérifie son sha256.
 
+- **Ajouter un plugin quelconque** : onglet « Ajouter un plugin » du récap. Upload d'un zip (un seul dossier racine, en-tête « Plugin Name »), choix des sites, installation en arrière-plan (2 sites en parallèle, arrêt si le serveur bloque). Un plugin déjà présent est remplacé en gardant son état actif ou inactif ; un nouveau plugin est activé. Exige `PUBLIC_BACKEND_URL` en `https://` (voir `.env.example`). Les zips sont stockés dans `data/plugins/<slug>/`.
+
 Le backend n'accepte d'envoyer des ordres qu'à des **sites publics déjà audités** (`results.json`) : les URLs vers `localhost`, des IP privées ou un hôte inconnu sont refusées.
 
 ---
