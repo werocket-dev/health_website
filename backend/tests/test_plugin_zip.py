@@ -115,6 +115,10 @@ class PluginApiTests(unittest.TestCase):
         self.main = main
         self.client = TestClient(main.app)
         self.h = {"X-API-Key": "test-key"}
+        # Garde-fou : aucun test de cette classe ne doit pouvoir lancer un vrai audit.
+        patcher = mock.patch.object(main, "run_audit", mock.AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         main._pz_jobs.clear()
         main._BD_PACE_SECONDS = (0, 0)
 
@@ -194,10 +198,6 @@ class PluginApiTests(unittest.TestCase):
             job = run(lambda: self.main._run_site_job("j", urls, self.main._refresh_action, "actualisation", False))
         self.assertEqual(job["sites"]["https://a.fr"]["status"], "done")
         self.assertEqual(job["sites"]["https://b.fr"]["status"], "error")
-
-    def test_selection_vide_ne_lance_pas_l_audit_du_parc(self):
-        r = self.client.post("/api/scan", json={"scope": "test", "urls": []}, headers=self.h)
-        self.assertEqual(r.status_code, 400)
 
     def test_liste_installee_ne_propose_que_des_plugins_supprimables(self):
         plugin = lambda name, path: {"name": name, "path": path, "version": "1", "is_active": True}

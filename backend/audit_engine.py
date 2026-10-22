@@ -116,6 +116,12 @@ def predict_visual(img_path):
 
 # --- COEUR DU SCANNER ---
 
+def is_partial_audit(scope: str, sites_list, limit) -> bool:
+    """Un audit partiel du parc conserve les autres sites dans results.json ; un audit complet les
+    remplace. Un test (scope="test") remplace toujours le précédent, jamais fusionné avec lui."""
+    return scope != "test" and (sites_list is not None or bool(limit))
+
+
 async def run_audit(sites_list=None, progress_callback=None, limit=None, random_sample=False, scope="parc"):
     def _progress(percent: int, label: str, status: str = "running"):
         if progress_callback:
@@ -141,7 +147,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
     # Onglet Test (scope="test") : les résultats vont dans leurs propres fichiers, et chaque
     # test remplace le précédent (jamais fusionné avec lui) ; le parc n'est pas touché.
     results_file, last_audit_file = scope_files(scope)
-    partial_audit = scope != "test" and (sites_list is not None or bool(limit))
+    partial_audit = is_partial_audit(scope, sites_list, limit)
 
     # 1. Récupération des sites à auditer
     if sites_list is None:
