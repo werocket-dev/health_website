@@ -750,6 +750,7 @@ async def breakdance_install_and_activate(request: Request, body: BreakdanceInst
     _bd_jobs[job_id] = {
         "finished": False,
         "aborted_reason": None,
+        "kind": "breakdance",
         "sites": {s.url: {"status": "pending"} for s in sites},
     }
     for old in list(_bd_jobs)[:-10]:
@@ -893,7 +894,7 @@ async def _run_site_job(job_id: str, urls: List[str], action, label: str, refres
     finally:
         job["finished"] = True
 
-def _start_site_job(slug: str, urls: List[str], action, label: str, refresh_after: bool = True) -> str:
+def _start_site_job(kind: str, slug: str, urls: List[str], action, label: str, refresh_after: bool = True) -> str:
     """Crée le job (un seul à la fois, tous types confondus) et le lance en arrière-plan."""
     import asyncio, uuid
     if _audit_progress.get("_locked"):
@@ -904,6 +905,7 @@ def _start_site_job(slug: str, urls: List[str], action, label: str, refresh_afte
     _pz_jobs[job_id] = {
         "finished": False,
         "aborted_reason": None,
+        "kind": kind,  # install, delete ou refresh : l'interface s'en sert pour reprendre le suivi
         "slug": slug,
         "sites": {u: {"status": "pending"} for u in urls},
     }
@@ -970,7 +972,7 @@ async def install_plugin_on_sites(request: Request, body: PluginInstallRequest):
 
     print(f"[audit] /api/plugins/install from {request.client.host} plugin={body.slug} v{meta['version']} sites={len(urls)}")
     job_id = _start_site_job(
-        body.slug, urls, _install_action(body.slug, body.license_key), f"installation {body.slug}"
+        "install", body.slug, urls, _install_action(body.slug, body.license_key), f"installation {body.slug}"
     )
     return {"job_id": job_id}
 
@@ -1001,7 +1003,7 @@ async def delete_plugin_on_sites(request: Request, body: PluginDeleteRequest):
 
     print(f"[audit] /api/plugins/delete from {request.client.host} plugin={body.plugin_path} sites={len(urls)}")
     job_id = _start_site_job(
-        body.plugin_path, urls, _delete_action(body.plugin_path), f"suppression {body.plugin_path}"
+        "delete", body.plugin_path, urls, _delete_action(body.plugin_path), f"suppression {body.plugin_path}"
     )
     return {"job_id": job_id}
 
@@ -1020,7 +1022,7 @@ async def refresh_plugins_list(request: Request, body: PluginRefreshRequest):
 
     print(f"[audit] /api/plugins/refresh from {request.client.host} scope={body.scope} sites={len(urls)}")
     # refresh_after=False : l'action elle-même relit le site et réécrit results.json.
-    job_id = _start_site_job("refresh", urls, _refresh_action, "actualisation", refresh_after=False)
+    job_id = _start_site_job("refresh", "refresh", urls, _refresh_action, "actualisation", refresh_after=False)
     return {"job_id": job_id}
 
 @app.get("/api/plugins/installed", dependencies=[Depends(require_api_key)])
@@ -1028,6 +1030,16 @@ def list_installed_plugins(scope: str = "parc"):
     """Plugins installés sur les sites, avec leurs sites (onglet Supprimer un plugin). À part du
     récap : la liste est volumineuse (tous les plugins de tous les sites) et ne sert qu'à cet onglet."""
     return {"plugins": _compute_installed_plugins(_read_entries(_results_files(scope)[0]))}
+
+@app.get("/api/jobs/current", dependencies=[Depends(require_api_key)])
+def current_job():
+    """Job de masse encore en cours (install, delete, refresh ou breakdance), pour que l'interface
+    reprenne son suivi après un changement de page ou un rechargement. Un seul job tourne à la fois."""
+    for jobs in (_pz_jobs, _bd_jobs):
+        for job_id, job in reversed(list(jobs.items())):
+            if not job["finished"]:
+                return {"job_id": job_id, "kind": job.get("kind")}
+    return {"job_id": None, "kind": None}
 
 @app.get("/api/plugins/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def plugin_install_job_status(job_id: str):

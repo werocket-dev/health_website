@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 import { Card } from "@/components/ui/Card";
-import { errorDetail, pollJob, type Scope } from "@/lib/jobs";
+import { errorDetail, pollJob, useJobSignal, useResumeJob, type Scope } from "@/lib/jobs";
 import { AddPluginTab } from "./AddPluginTab";
 import { DeletePluginTab } from "./DeletePluginTab";
 
@@ -346,8 +346,18 @@ export function RecapView({
     setRefresh({ done: 0, total: 0, running: true, error: null });
     try {
       const { data: started } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/refresh`, { scope });
-      await pollJob<{ finished: boolean; sites: Record<string, { status: string }> }>(
-        `/plugins/jobs/${started.job_id}`,
+      await followRefresh(started.job_id);
+    } catch (e) {
+      setRefresh({ done: 0, total: 0, running: false, error: errorDetail(e, "Échec de l'actualisation") });
+    }
+  };
+
+  // Le job tourne sur le serveur : on reprend son suivi après un changement de page ou un rechargement.
+  const followRefresh = async (jobId: string, resumed = false) => {
+    setRefresh((prev) => prev ?? { done: 0, total: 0, running: true, error: null });
+    try {
+      const done = await pollJob<{ finished: boolean; sites: Record<string, { status: string }> }>(
+        `/plugins/jobs/${jobId}`,
         (status) => {
           const all = Object.values(status.sites);
           setRefresh({
@@ -356,13 +366,17 @@ export function RecapView({
             running: !status.finished,
             error: null,
           });
-        }
+        },
+        { signal: getSignal(), firstDelay: resumed ? 0 : 3000 }
       );
-      setRetryCount((c) => c + 1); // recharge le récap avec les données relues
+      if (done) setRetryCount((c) => c + 1); // recharge le récap avec les données relues
     } catch (e) {
-      setRefresh({ done: 0, total: 0, running: false, error: errorDetail(e, "Échec de l'actualisation") });
+      setRefresh({ done: 0, total: 0, running: false, error: errorDetail(e, "Suivi de l'actualisation interrompu") });
     }
   };
+
+  const getSignal = useJobSignal();
+  useResumeJob(["refresh"], (jobId) => void followRefresh(jobId, true));
 
   const [showLicenseModal, setShowLicenseModal] = useState(false);
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
@@ -407,28 +421,44 @@ export function RecapView({
     setBdRunning(true);
     setBdJob(Object.fromEntries(urls.map((u) => [u, { status: "pending" as const }])));
     setShowLicenseModal(false);
+    let jobId: string;
     try {
       const key = licenseKeyInput.trim() || null;
       const { data } = await axios.post<{ job_id: string }>(`${API_URL}/breakdance/install-and-activate`, {
         sites: urls.map((url) => ({ url, license_key: key })),
       });
+      jobId = data.job_id;
       setLicenseKeyInput("");
+    } catch (e) {
+      setBdError(errorDetail(e, "Échec du lancement de l'installation"));
+      setBdRunning(false);
+      return;
+    }
+    await followBreakdance(jobId);
+  };
 
-      // Le job dure plusieurs minutes : on suit sa progression par polling.
-      await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, BreakdanceSiteJob> }>(
-        `/breakdance/jobs/${data.job_id}`,
+  // Le job dure plusieurs minutes : on suit sa progression par polling (et on la reprend après un
+  // changement de page, le job tournant sur le serveur).
+  const followBreakdance = async (jobId: string, resumed = false) => {
+    setBdRunning(true);
+    try {
+      const done = await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, BreakdanceSiteJob> }>(
+        `/breakdance/jobs/${jobId}`,
         (job) => {
           setBdJob(job.sites);
           setBdAbortReason(job.aborted_reason);
-        }
+        },
+        { signal: getSignal(), firstDelay: resumed ? 0 : 3000 }
       );
-      setRetryCount((c) => c + 1); // recharge le récap avec les nouveaux statuts
+      if (done) setRetryCount((c) => c + 1); // recharge le récap avec les nouveaux statuts
     } catch (e) {
-      setBdError(errorDetail(e, "Échec du lancement de l'installation"));
+      setBdError(errorDetail(e, "Suivi de l'installation interrompu"));
     } finally {
       setBdRunning(false);
     }
   };
+
+  useResumeJob(["breakdance"], (jobId) => void followBreakdance(jobId, true));
 
   useEffect(() => {
     setLoading(true);

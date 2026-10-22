@@ -355,6 +355,7 @@ class ApiTests(TempFiles):
     def test_authentification_requise(self):
         for method, path, body in (
             ("get", "/api/plugins/installed", None),
+            ("get", "/api/jobs/current", None),
             ("post", "/api/plugins/delete", {"plugin_path": "a/a.php", "urls": ["https://a.fr"]}),
             ("post", "/api/plugins/refresh", {"scope": "parc"}),
             ("post", "/api/scan", {"scope": "test", "limit": 3}),
@@ -475,6 +476,48 @@ class ApiTests(TempFiles):
     def test_pas_de_job_pendant_une_installation_breakdance(self):
         self.main._bd_jobs["bd"] = {"finished": False, "aborted_reason": None, "sites": {}}
         self.assertEqual(self.post("/api/plugins/refresh", {"scope": "parc"}).status_code, 409)
+
+    # --- reprise du suivi après un changement de page ----------------------------------------
+    def test_aucun_job_en_cours(self):
+        self.assertEqual(self.get("/api/jobs/current").json(), {"job_id": None, "kind": None})
+
+    def test_chaque_job_porte_son_type(self):
+        # (Le client de test ferme sa boucle après chaque requête et annule la tâche : on lit donc
+        # le job créé, pas /api/jobs/current, qui le verrait déjà terminé.)
+        self.write(self.parc, [{"client": "A", "url": "https://a.fr"}])
+        with mock.patch.object(self.main.plugin_zip, "get_meta", lambda slug: {"sha256": "a" * 64, "version": "1"}), \
+             mock.patch.object(self.main.plugin_zip, "build_download_url", lambda slug, sha: "https://backend.test/dl/x"):
+            for path, body, kind in (
+                ("/api/plugins/refresh", {"scope": "parc"}, "refresh"),
+                ("/api/plugins/delete", {"plugin_path": "akismet/akismet.php", "urls": ["https://a.fr"]}, "delete"),
+                ("/api/plugins/install", {"slug": "mon-plugin", "urls": ["https://a.fr"]}, "install"),
+            ):
+                self.main._pz_jobs.clear()
+                job_id = self.post(path, body).json()["job_id"]
+                self.assertEqual(self.main._pz_jobs[job_id]["kind"], kind, path)
+
+    def test_le_job_en_cours_est_retrouve_avec_son_type(self):
+        for kind in ("install", "delete", "refresh"):
+            self.main._pz_jobs.clear()
+            self.main._pz_jobs["j"] = {"finished": False, "aborted_reason": None, "kind": kind, "slug": "x", "sites": {}}
+            self.assertEqual(self.get("/api/jobs/current").json(), {"job_id": "j", "kind": kind})
+
+    def test_un_job_termine_n_est_plus_propose(self):
+        self.main._pz_jobs["j"] = {"finished": True, "aborted_reason": None, "kind": "refresh", "sites": {}}
+        self.assertIsNone(self.get("/api/jobs/current").json()["job_id"])
+
+    def test_job_breakdance_retrouve(self):
+        self.main._bd_jobs["bd"] = {"finished": False, "aborted_reason": None, "kind": "breakdance", "sites": {}}
+        self.assertEqual(self.get("/api/jobs/current").json(), {"job_id": "bd", "kind": "breakdance"})
+
+    def test_le_plus_recent_des_jobs_en_cours_est_choisi(self):
+        self.main._pz_jobs["ancien"] = {"finished": False, "aborted_reason": None, "kind": "refresh", "sites": {}}
+        self.main._pz_jobs["recent"] = {"finished": False, "aborted_reason": None, "kind": "delete", "sites": {}}
+        self.assertEqual(self.get("/api/jobs/current").json()["job_id"], "recent")
+
+    def test_route_job_courant_distincte_de_celle_d_un_job(self):
+        # /api/jobs/current ne doit jamais être lue comme un job_id de /api/plugins/jobs/{job_id}
+        self.assertEqual(self.get("/api/plugins/jobs/current").status_code, 404)
 
     def test_suivi_d_un_job_inconnu(self):
         self.assertEqual(self.get("/api/plugins/jobs/nimporte").status_code, 404)

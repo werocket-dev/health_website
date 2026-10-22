@@ -3,7 +3,7 @@
 import axios from "axios";
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
-import { errorDetail, pollJob, type Scope } from "@/lib/jobs";
+import { errorDetail, pollJob, useJobSignal, useResumeJob, type Scope } from "@/lib/jobs";
 
 const API_URL = "/api/backend";
 
@@ -108,29 +108,55 @@ export function DeletePluginTab({
     setRunning(true);
     setJobPlugin(plugin.plugin_name);
     setJob(Object.fromEntries(urls.map((u) => [u, { status: "pending" as const }])));
+    let jobId: string;
     try {
       const { data } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/delete`, {
         plugin_path: plugin.plugin_path,
         urls,
       });
+      jobId = data.job_id;
+    } catch (e) {
+      setInstallError(errorDetail(e, "Échec du lancement de la suppression"));
+      setRunning(false);
+      return;
+    }
+    if (await followJob(jobId)) setSelected((prev) => ({ ...prev, [plugin.plugin_path]: new Set() }));
+  };
 
-      // Le job dure plusieurs minutes : on suit sa progression par polling.
-      await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, SiteJob> }>(
-        `/plugins/jobs/${data.job_id}`,
+  // Le job dure plusieurs minutes : on suit sa progression par polling. Appelé aussi pour reprendre
+  // un job lancé avant un changement de page (il tourne sur le serveur, pas dans la page).
+  // Renvoie true si le job est terminé.
+  const followJob = async (jobId: string, resumed = false): Promise<boolean> => {
+    setRunning(true);
+    try {
+      const done = await pollJob<{
+        finished: boolean;
+        aborted_reason: string | null;
+        slug: string;
+        sites: Record<string, SiteJob>;
+      }>(
+        `/plugins/jobs/${jobId}`,
         (status) => {
           setJob(status.sites);
           setAbortReason(status.aborted_reason);
-        }
+          setJobPlugin((prev) => prev ?? status.slug);
+        },
+        { signal: getSignal(), firstDelay: resumed ? 0 : 3000 }
       );
+      if (!done) return false;
       setFinished(true);
-      setSelected((prev) => ({ ...prev, [plugin.plugin_path]: new Set() }));
       onDeleted(); // recharge le récap : le plugin disparaît des sites où il a été supprimé
+      return true;
     } catch (e) {
-      setInstallError(errorDetail(e, "Échec du lancement de la suppression"));
+      setInstallError(errorDetail(e, "Suivi de la suppression interrompu"));
+      return false;
     } finally {
       setRunning(false);
     }
   };
+
+  const getSignal = useJobSignal();
+  useResumeJob(["delete"], (jobId) => void followJob(jobId, true));
 
   const clientByUrl = useMemo(() => new Map(plugins.flatMap((p) => p.sites.map((s) => [s.url, s.client] as const))), [plugins]);
   const clientOf = (url: string) => clientByUrl.get(url) ?? url;

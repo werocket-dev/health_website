@@ -3,7 +3,7 @@
 import axios from "axios";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
-import { errorDetail, pollJob, type Scope } from "@/lib/jobs";
+import { errorDetail, pollJob, useJobSignal, useResumeJob, type Scope } from "@/lib/jobs";
 
 const API_URL = "/api/backend";
 
@@ -161,30 +161,48 @@ export function AddPluginTab({ onInstalled, scope = "parc" }: { onInstalled: () 
     setFinished(false);
     setRunning(true);
     setJob(Object.fromEntries(urls.map((u) => [u, { status: "pending" as const }])));
+    let jobId: string;
     try {
       const { data } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/install`, {
         slug: selectedZip.slug,
         urls,
         license_key: licenseKey.trim() || null, // le backend ne l'applique qu'à Breakdance
       });
+      jobId = data.job_id;
       setLicenseKey("");
+    } catch (e) {
+      setInstallError(errorDetail(e, "Échec du lancement de l'installation"));
+      setRunning(false);
+      return;
+    }
+    await followJob(jobId);
+  };
 
-      // Le job dure plusieurs minutes : on suit sa progression par polling.
-      await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, SiteJob> }>(
-        `/plugins/jobs/${data.job_id}`,
+  // Le job dure plusieurs minutes : on suit sa progression par polling. Appelé aussi pour reprendre
+  // un job lancé avant un changement de page (il tourne sur le serveur, pas dans la page).
+  const followJob = async (jobId: string, resumed = false) => {
+    setRunning(true);
+    try {
+      const done = await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, SiteJob> }>(
+        `/plugins/jobs/${jobId}`,
         (status) => {
           setJob(status.sites);
           setAbortReason(status.aborted_reason);
-        }
+        },
+        { signal: getSignal(), firstDelay: resumed ? 0 : 3000 }
       );
+      if (!done) return;
       setFinished(true);
       onInstalled(); // recharge le récap avec les nouveaux états
     } catch (e) {
-      setInstallError(errorDetail(e, "Échec du lancement de l'installation"));
+      setInstallError(errorDetail(e, "Suivi de l'installation interrompu"));
     } finally {
       setRunning(false);
     }
   };
+
+  const getSignal = useJobSignal();
+  useResumeJob(["install"], (jobId) => void followJob(jobId, true));
 
   const clientOf = (url: string) => sites.find((s) => s.url === url)?.client ?? url;
   const jobEntries = job ? Object.entries(job) : [];
