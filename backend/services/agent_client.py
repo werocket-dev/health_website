@@ -633,6 +633,7 @@ def refresh_site_in_results(url: str) -> dict:
         # Le site peut figurer dans le parc ET dans l'échantillon de l'onglet Test : on rafraîchit
         # chaque fichier qui le contient, pour que les deux vues restent justes.
         updated = False
+        file_error = None
         for path in (RESULTS_FILE, TEST_RESULTS_FILE):
             if not os.path.exists(path):
                 continue
@@ -640,7 +641,8 @@ def refresh_site_in_results(url: str) -> dict:
                 with open(path, "r", encoding="utf-8") as f:
                     results = json.load(f)
             except Exception as e:
-                return {'success': False, 'error': f'Lecture {os.path.basename(path)} échouée: {e}'}
+                file_error = f'Lecture {os.path.basename(path)} échouée: {e}'
+                continue
 
             found = False
             for entry in results:
@@ -664,11 +666,13 @@ def refresh_site_in_results(url: str) -> dict:
             try:
                 write_json_atomic(path, results)
             except Exception as e:
-                return {'success': False, 'error': f'Écriture {os.path.basename(path)} échouée: {e}'}
+                file_error = f'Écriture {os.path.basename(path)} échouée: {e}'
+                continue
             updated = True
 
+        # Une erreur sur un fichier ne gâche pas l'autre : on échoue seulement si rien n'a été mis à jour.
         if not updated:
-            return {'success': False, 'error': "Site absent de results.json (pas encore audité)"}
+            return {'success': False, 'error': file_error or "Site absent de results.json (pas encore audité)"}
 
     return {'success': True, 'updates_count': parsed["updates_info"]["count_updates"],
             'updates_needed': parsed["updates_info"]["updates_needed"]}

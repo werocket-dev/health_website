@@ -8,6 +8,7 @@ import os
 # où ce mécanisme Objective-C n'existe pas.
 os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
+import asyncio
 import json
 import re
 import secrets
@@ -257,7 +258,9 @@ def _compute_installed_plugins(data: list[dict]) -> list[dict]:
     for d in data:
         for p in d.get("plugins_installed") or []:
             path = p.get("path") or ""
-            if not path or path.split("/")[0] == AGENT_PLUGIN_FOLDER:
+            # Seuls les chemins que l'agent accepte de supprimer (dossier/fichier.php) : un plugin
+            # d'un seul fichier (hello.php) ou au nom à points échouerait en 400 pour tout le job.
+            if not _PLUGIN_PATH_RE.match(path) or path.split("/")[0] == AGENT_PLUGIN_FOLDER:
                 continue
             agg = installed_agg.setdefault(path, {"plugin_name": p.get("name") or path, "sites": {}})
             agg["sites"][d.get("url")] = {
@@ -428,10 +431,12 @@ async def launch_scan(
 
     limit = None
     random_sample = False
-    if scan_request and scan_request.urls:
+    if scan_request and scan_request.urls is not None:
         if scope != "test":
             raise HTTPException(status_code=400, detail="Le choix de sites n'est possible que dans l'onglet Test")
         urls = list(dict.fromkeys(scan_request.urls))
+        if not urls:  # une liste vide ne doit pas retomber sur l'audit de tout le parc
+            raise HTTPException(status_code=400, detail="Aucun site sélectionné")
         await _check_site_urls(urls)  # sites connus uniquement
         names = {e.get("url"): e.get("client") for e in _read_entries(RESULTS_FILE)}
         sites_list = [{"Client": names.get(u) or u, "URL": u} for u in urls]
@@ -616,7 +621,7 @@ async def upload_breakdance_zip(request: Request):
         if size == 0:
             raise HTTPException(status_code=400, detail="Fichier vide")
         try:
-            meta = breakdance_zip.store_zip(tmp_path, filename)
+            meta = await asyncio.to_thread(breakdance_zip.store_zip, tmp_path, filename)
         except breakdance_zip.ZipError as e:
             raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -791,7 +796,7 @@ async def upload_plugin_zip(request: Request):
         if size == 0:
             raise HTTPException(status_code=400, detail="Fichier vide")
         try:
-            meta = plugin_zip.store_zip(tmp_path, filename)
+            meta = await asyncio.to_thread(plugin_zip.store_zip, tmp_path, filename)
         except plugin_zip.ZipError as e:
             raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -891,6 +896,8 @@ async def _run_site_job(job_id: str, urls: List[str], action, label: str, refres
 def _start_site_job(slug: str, urls: List[str], action, label: str, refresh_after: bool = True) -> str:
     """Crée le job (un seul à la fois, tous types confondus) et le lance en arrière-plan."""
     import asyncio, uuid
+    if _audit_progress.get("_locked"):
+        raise HTTPException(status_code=409, detail="Un audit est en cours — attends qu'il se termine.")
     if any(not j["finished"] for j in list(_pz_jobs.values()) + list(_bd_jobs.values())):
         raise HTTPException(status_code=409, detail="Une opération est déjà en cours")
     job_id = uuid.uuid4().hex
@@ -1077,9 +1084,10 @@ async def get_recap(scope: str = "parc"):
     de l'onglet Test (vide tant qu'aucun test n'a tourné, jamais de repli sur le parc).
     """
     results_file, last_audit_file = _results_files(scope)
-    if scope == "test" and not os.path.exists(results_file):
-        recap = _compute_recap_from_results([])
-        recap["last_audit_finished_at"] = None
+    if scope == "test":
+        # Jamais de repli sur le parc : un fichier absent ou illisible donne un récap vide.
+        recap = _compute_recap_from_results(_read_entries(results_file))
+        recap["last_audit_finished_at"] = _read_last_audit_finished_at(last_audit_file)
         return recap
     if os.path.exists(results_file):
         try:

@@ -195,6 +195,19 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(job["sites"]["https://a.fr"]["status"], "done")
         self.assertEqual(job["sites"]["https://b.fr"]["status"], "error")
 
+    def test_selection_vide_ne_lance_pas_l_audit_du_parc(self):
+        r = self.client.post("/api/scan", json={"scope": "test", "urls": []}, headers=self.h)
+        self.assertEqual(r.status_code, 400)
+
+    def test_liste_installee_ne_propose_que_des_plugins_supprimables(self):
+        plugin = lambda name, path: {"name": name, "path": path, "version": "1", "is_active": True}
+        data = [{"client": "A", "url": "https://a.fr", "plugins_installed": [
+            plugin("Akismet", "akismet/akismet.php"),
+            plugin("Hello Dolly", "hello.php"),  # fichier seul : l'agent le refuserait
+            plugin("Agent", "werocket-agent/werocket-agent.php"),
+        ]}]
+        self.assertEqual([p["plugin_path"] for p in self.main._compute_installed_plugins(data)], ["akismet/akismet.php"])
+
     def test_suppression_refuse_l_agent_et_un_chemin_invalide(self):
         for path in ("werocket-agent/werocket-agent.php", "../etc/passwd", "akismet.php"):
             r = self.client.post("/api/plugins/delete", json={"plugin_path": path, "urls": ["https://a.fr"]}, headers=self.h)
