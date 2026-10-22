@@ -6,7 +6,7 @@ import requests
 from nacl.signing import SigningKey
 from dotenv import load_dotenv
 
-from .config import RESULTS_FILE
+from .config import RESULTS_FILE, TEST_RESULTS_FILE
 from urllib.parse import urljoin
 from . import url_guard
 from .json_store import results_lock, write_json_atomic
@@ -397,6 +397,61 @@ def install_plugin_zip(url: str, zip_url: str, sha256: str) -> dict:
     except Exception as e:
         return {'success': False, 'error': describe_request_error(e)}
 
+def delete_plugin_via_agent(url: str, plugin_path: str) -> dict:
+    """
+    Supprime un plugin (désactivation puis suppression des fichiers) via la route
+    /werocket/v1/delete-plugin de l'Agent (≥ 3.6.0). plugin_path = "dossier/fichier.php",
+    signé avec le reste : site_url|timestamp|route|plugin_path.
+    """
+    if not AGENT_AVAILABLE:
+        return {'success': False, 'error': 'Agent non configuré (variables .env manquantes)'}
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        final_base_url = _resolve_final_base_url(session, url)
+
+        timestamp = int(time.time())
+        route = "/werocket/v1/delete-plugin"
+        message = f"{final_base_url}|{timestamp}|{route}|{plugin_path}"
+        signature = _signing_key.sign(message.encode('utf-8')).signature.hex()
+
+        payload = {
+            'timestamp': timestamp,
+            'signature': signature,
+            'plugin_path': plugin_path,
+        }
+        headers = {
+            'X-WeRocket-Key': WEROCKET_AGENT_HEADER_KEY,
+            'Content-Type': 'application/json',
+        }
+
+        endpoint = f"{final_base_url}/wp-json/werocket/v1/delete-plugin"
+        print(f"      🗑️  Suppression plugin {plugin_path} sur : {endpoint}")
+
+        response = session.post(endpoint, json=payload, headers=headers, timeout=60, verify=True)
+
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            data = None
+
+        if response.status_code == 200 and isinstance(data, dict):
+            if data.get('success'):
+                return {'success': True, 'message': data.get('message', 'Plugin supprimé')}
+            return {'success': False, 'error': data.get('message', 'Erreur inconnue depuis WordPress')}
+        if response.status_code == 404 and not (isinstance(data, dict) and data.get('code') not in (None, 'rest_no_route')):
+            return {'success': False, 'error': '404 - Route delete-plugin non disponible (agent WP à mettre à jour)'}
+        if isinstance(data, dict) and data.get('message'):
+            return {'success': False, 'error': f"{data['message']} (HTTP {response.status_code})"[:200]}
+        return {'success': False, 'error': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        return {'success': False, 'error': describe_request_error(e)}
+
 def update_core_via_agent(url: str) -> dict:
     """
     Déclenche la mise à jour du core WordPress via l'Agent WeRocket.
@@ -485,6 +540,7 @@ def parse_agent_data(data):
 
     plugins_data = data.get('plugins', [])
     plugins_dict = {}
+    plugins_installed = []
     updates_needed = []
     updates_needed_raw = []
 
@@ -496,6 +552,14 @@ def parse_agent_data(data):
 
         status = "Actif" if is_active else "Inactif"
         plugins_dict[plugin_name] = f"{plugin_version} ({status})"
+        # Liste complète (avec le chemin dossier/fichier.php) : sert à l'onglet de suppression.
+        plugins_installed.append({
+            'name': plugin_name,
+            'slug': plugin.get('slug', ''),
+            'path': plugin.get('path', ''),
+            'version': plugin_version,
+            'is_active': bool(is_active),
+        })
 
         if update_available.get('available'):
             new_version = update_available.get('new_version')
@@ -536,6 +600,7 @@ def parse_agent_data(data):
         "themes_list": themes_list,
         "licenses": licenses_info,
         "plugins_dict": plugins_dict,
+        "plugins_installed": plugins_installed,
         "tech_info": {"builder": builder, "version": builder_version},
         "updates_info": {
             "count_updates": len(updates_needed),
@@ -562,38 +627,48 @@ def refresh_site_in_results(url: str) -> dict:
     # Lecture-modification-écriture sous verrou : deux rafraîchissements simultanés
     # (workers du job Breakdance) ne doivent pas s'écraser l'un l'autre.
     with results_lock:
-        if not os.path.exists(RESULTS_FILE):
+        if not os.path.exists(RESULTS_FILE) and not os.path.exists(TEST_RESULTS_FILE):
             return {'success': False, 'error': 'results.json introuvable'}
 
-        try:
-            with open(RESULTS_FILE, "r", encoding="utf-8") as f:
-                results = json.load(f)
-        except Exception as e:
-            return {'success': False, 'error': f'Lecture results.json échouée: {e}'}
-
+        # Le site peut figurer dans le parc ET dans l'échantillon de l'onglet Test : on rafraîchit
+        # chaque fichier qui le contient, pour que les deux vues restent justes.
         updated = False
-        for entry in results:
-            if entry.get("url") == url:
-                entry["wp_version"] = parsed["version_wp"]
-                entry["php_version"] = parsed["version_php"]
-                entry["builder"] = parsed["tech_info"]["builder"]
-                entry["updates_count"] = parsed["updates_info"]["count_updates"]
-                entry["mises_a_jour"] = updates_list
-                entry["methode"] = "Agent"
-                entry["themes"] = parsed["themes_list"]
-                entry["licenses"] = parsed["licenses"]
-                # Lu par la fin d'audit : un rafraîchissement fait pendant l'audit est plus récent que ses résultats.
-                entry["refreshed_at"] = datetime.now(timezone.utc).isoformat()
-                updated = True
-                break
+        for path in (RESULTS_FILE, TEST_RESULTS_FILE):
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    results = json.load(f)
+            except Exception as e:
+                return {'success': False, 'error': f'Lecture {os.path.basename(path)} échouée: {e}'}
+
+            found = False
+            for entry in results:
+                if entry.get("url") == url:
+                    entry["wp_version"] = parsed["version_wp"]
+                    entry["php_version"] = parsed["version_php"]
+                    entry["builder"] = parsed["tech_info"]["builder"]
+                    entry["updates_count"] = parsed["updates_info"]["count_updates"]
+                    entry["mises_a_jour"] = updates_list
+                    entry["methode"] = "Agent"
+                    entry["themes"] = parsed["themes_list"]
+                    entry["licenses"] = parsed["licenses"]
+                    entry["plugins_installed"] = parsed["plugins_installed"]
+                    # Lu par la fin d'audit : un rafraîchissement fait pendant l'audit est plus récent que ses résultats.
+                    entry["refreshed_at"] = datetime.now(timezone.utc).isoformat()
+                    found = True
+                    break
+            if not found:
+                continue
+
+            try:
+                write_json_atomic(path, results)
+            except Exception as e:
+                return {'success': False, 'error': f'Écriture {os.path.basename(path)} échouée: {e}'}
+            updated = True
 
         if not updated:
             return {'success': False, 'error': "Site absent de results.json (pas encore audité)"}
-
-        try:
-            write_json_atomic(RESULTS_FILE, results)
-        except Exception as e:
-            return {'success': False, 'error': f'Écriture results.json échouée: {e}'}
 
     return {'success': True, 'updates_count': parsed["updates_info"]["count_updates"],
             'updates_needed': parsed["updates_info"]["updates_needed"]}

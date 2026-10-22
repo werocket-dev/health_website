@@ -221,11 +221,16 @@ export default function SanteDesSitesPage() {
   // Polling progression audit
   useEffect(() => {
     if (!auditProgress || auditProgress.status === "idle") return;
-    if (auditProgress.status === "done") return;
+    if (auditProgress.status === "done" || auditProgress.status === "error") return;
 
     const interval = setInterval(async () => {
       try {
         const { data } = await axios.get(`${API_URL}/progress`);
+        if (data.status === "error") {
+          setAuditError(data.label);
+          setAuditProgress(null);
+          return;
+        }
         setAuditProgress(data);
         if (data.status === "done") {
           fetchResults();
@@ -368,6 +373,7 @@ export default function SanteDesSitesPage() {
         nav={[
           { label: "Résultats", href: "/" },
           { label: "Récap", href: "/recap" },
+          { label: "Test", href: "/test" },
         ]}
         actions={<LogoutButton />}
       />
@@ -410,18 +416,6 @@ export default function SanteDesSitesPage() {
                 </p>
               </div>
               <div className="flex items-center gap-3">
-                <button
-                  onClick={() => handleLaunchAudit(10, true)}
-                  disabled={auditRunning}
-                  className="px-4 py-3 rounded-xl font-medium text-sm transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                  style={{
-                    background: "rgba(23,25,28,0.06)",
-                    color: "var(--color-ink)",
-                  }}
-                  title="Lance l'audit sur 10 sites tirés au hasard dans le parc, pour tester"
-                >
-                  {auditRunning ? "Audit en cours..." : "Audit test (10 sites aléatoires)"}
-                </button>
                 <button
                   onClick={() => handleLaunchAudit()}
                   disabled={auditRunning}

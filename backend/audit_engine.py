@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright
 import json
 from dotenv import load_dotenv
 
-from services.config import RESULTS_FILE, LAST_AUDIT_FILE
+from services.config import RESULTS_FILE, LAST_AUDIT_FILE, TEST_RESULTS_FILE, TEST_LAST_AUDIT_FILE
 from services.json_store import results_lock, write_json_atomic, merge_audit_results
 from services import capture_settings as cs
 from services.agent_client import (
@@ -25,6 +25,7 @@ from services.agent_client import (
     update_plugin_via_agent,
     update_core_via_agent,
     delete_theme_via_agent,
+    delete_plugin_via_agent,
     activate_license_via_agent,
     install_plugin_zip,
     parse_agent_data,
@@ -115,7 +116,7 @@ def predict_visual(img_path):
 
 # --- COEUR DU SCANNER ---
 
-async def run_audit(sites_list=None, progress_callback=None, limit=None, random_sample=False):
+async def run_audit(sites_list=None, progress_callback=None, limit=None, random_sample=False, scope="parc"):
     def _progress(percent: int, label: str, status: str = "running"):
         if progress_callback:
             progress_callback({"status": status, "percent": percent, "label": label})
@@ -137,7 +138,12 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
         dict: Statistiques de l'audit avec détails par site
     """
     audit_started_at = datetime.now(timezone.utc).isoformat()
-    partial_audit = sites_list is not None or bool(limit)
+    # Onglet Test (scope="test") : les résultats vont dans leurs propres fichiers, et chaque
+    # test remplace le précédent (jamais fusionné avec lui) ; le parc n'est pas touché.
+    is_test = scope == "test"
+    results_file = TEST_RESULTS_FILE if is_test else RESULTS_FILE
+    last_audit_file = TEST_LAST_AUDIT_FILE if is_test else LAST_AUDIT_FILE
+    partial_audit = False if is_test else (sites_list is not None or bool(limit))
 
     # 1. Récupération des sites à auditer
     if sites_list is None:
@@ -274,6 +280,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                 methode_scan = "Inconnu"
                 tech_info = {"builder": "Inconnu", "version": "N/A"}
                 plugins_dict = {}
+                plugins_installed = []
                 updates_info = {"count_updates": 0, "updates_needed": []}
                 version_wp = "N/A"
                 version_php = "N/A"
@@ -296,6 +303,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                     themes_list = parsed["themes_list"]
                     licenses_info = parsed["licenses"]
                     plugins_dict = parsed["plugins_dict"]
+                    plugins_installed = parsed["plugins_installed"]
                     tech_info = parsed["tech_info"]
                     updates_info = parsed["updates_info"]
 
@@ -340,6 +348,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                     "methode_scan": methode_scan,
                     "tech_info": tech_info,
                     "plugins_dict": plugins_dict,
+                    "plugins_installed": plugins_installed,
                     "updates_info": updates_info,
                     "version_wp": version_wp,
                     "version_php": version_php,
@@ -423,6 +432,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
         methode_scan = entry["methode_scan"]
         tech_info = entry["tech_info"]
         plugins_dict = entry["plugins_dict"]
+        plugins_installed = entry.get("plugins_installed", [])
         updates_info = entry["updates_info"]
         version_wp = entry["version_wp"]
         version_php = entry["version_php"]
@@ -454,6 +464,7 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
             "methode": methode_scan,
             "licenses": licenses_info,
             "themes": themes_list,
+            "plugins_installed": plugins_installed,
             "http_status": entry.get("http_status"),
         })
 
@@ -566,20 +577,20 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
                 # Un site rafraîchi (mise à jour de plugin, activation de licence…) pendant
                 # l'audit est plus récent que ce que l'audit a mesuré avant : on le garde.
                 try:
-                    with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+                    with open(results_file, "r", encoding="utf-8") as f:
                         current = json.load(f)
                 except (OSError, ValueError):
                     current = []
                 json_results = merge_audit_results(current, json_results, audit_started_at, partial_audit)
-                write_json_atomic(RESULTS_FILE, json_results)
-            print(f"✅ Résultats sauvegardés dans {RESULTS_FILE} ({len(json_results)} sites)")
+                write_json_atomic(results_file, json_results)
+            print(f"✅ Résultats sauvegardés dans {results_file} ({len(json_results)} sites)")
         except Exception as e:
             print(f"⚠️  Erreur écriture results.json: {e}")
 
         # Horodatage de fin, pour l'affichage "dernier audit" du récap — fichier
         # séparé plutôt qu'un champ dans results.json, pour ne pas changer sa forme.
         try:
-            with open(LAST_AUDIT_FILE, "w", encoding="utf-8") as f:
+            with open(last_audit_file, "w", encoding="utf-8") as f:
                 json.dump({"finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")}, f)
         except Exception as e:
             print(f"⚠️  Erreur écriture last_audit.json: {e}")

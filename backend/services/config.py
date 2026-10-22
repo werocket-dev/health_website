@@ -11,3 +11,8 @@ DATA_DIR = os.path.join(_BACKEND_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 RESULTS_FILE = os.path.join(DATA_DIR, "results.json")
 LAST_AUDIT_FILE = os.path.join(DATA_DIR, "last_audit.json")
+
+# Onglet Test : audits courts sur un échantillon, dans leurs propres fichiers pour ne jamais
+# toucher aux résultats du parc.
+TEST_RESULTS_FILE = os.path.join(DATA_DIR, "test_results.json")
+TEST_LAST_AUDIT_FILE = os.path.join(DATA_DIR, "test_last_audit.json")

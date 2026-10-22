@@ -50,7 +50,7 @@ function doneLabel(job: SiteJob): string {
 
 const mutedText = { color: "rgba(23,25,28,0.5)" };
 
-export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
+export function AddPluginTab({ onInstalled, scope = "parc" }: { onInstalled: () => void; scope?: "parc" | "test" }) {
   const [zips, setZips] = useState<PluginZip[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -61,6 +61,8 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
   const [sitesError, setSitesError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
+  const [licenseKey, setLicenseKey] = useState("");
+  const [showSelectedOnly, setShowSelectedOnly] = useState(false);
 
   const [running, setRunning] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
@@ -77,18 +79,25 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
       })
       .catch(() => setUploadError("Impossible de charger les zips enregistrés."));
     axios
-      .get<{ sites: Site[] }>(`${API_URL}/sites`)
+      .get<{ sites: Site[] }>(`${API_URL}/sites`, { params: { scope } })
       .then(({ data }) => setSites(data.sites))
       .catch(() => setSitesError("Impossible de charger la liste des sites."));
-  }, []);
+  }, [scope]);
 
   const selectedZip = zips.find((z) => z.slug === selectedSlug) ?? null;
+  const isBreakdance = selectedZip?.slug === "breakdance";
+
+  // Sans sélection, le mode « sélection seulement » n'a rien à montrer : on l'ignore.
+  const onlySelected = showSelectedOnly && selectedUrls.size > 0;
 
   const filteredSites = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sites;
-    return sites.filter((s) => s.client.toLowerCase().includes(q) || s.url.toLowerCase().includes(q));
-  }, [sites, query]);
+    return sites.filter(
+      (s) =>
+        (!onlySelected || selectedUrls.has(s.url)) &&
+        (!q || s.client.toLowerCase().includes(q) || s.url.toLowerCase().includes(q))
+    );
+  }, [sites, query, onlySelected, selectedUrls]);
 
   const allFilteredSelected = filteredSites.length > 0 && filteredSites.every((s) => selectedUrls.has(s.url));
 
@@ -157,7 +166,12 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
     setRunning(true);
     setJob(Object.fromEntries(urls.map((u) => [u, { status: "pending" as const }])));
     try {
-      const { data } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/install`, { slug: selectedZip.slug, urls });
+      const { data } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/install`, {
+        slug: selectedZip.slug,
+        urls,
+        license_key: isBreakdance && licenseKey.trim() ? licenseKey.trim() : null,
+      });
+      setLicenseKey("");
 
       // Le job dure plusieurs minutes : on suit sa progression par polling.
       let done = false;
@@ -293,20 +307,29 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
             style={{ color: "var(--color-deep-teal)" }}
           >
             {allFilteredSelected ? "Tout désélectionner" : "Tout sélectionner"}
-            {query.trim() ? ` (${filteredSites.length} résultat${filteredSites.length > 1 ? "s" : ""})` : ""}
+            {query.trim() || onlySelected ? ` (${filteredSites.length} résultat${filteredSites.length > 1 ? "s" : ""})` : ""}
           </button>
           {selectedUrls.size > 0 && (
-            <button
-              onClick={() => setSelectedUrls(new Set())}
-              disabled={running}
-              className="text-xs cursor-pointer hover:underline disabled:opacity-50"
-              style={mutedText}
-            >
-              Vider la sélection
-            </button>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setShowSelectedOnly((v) => !v)}
+                className="text-xs font-medium cursor-pointer hover:underline"
+                style={{ color: "var(--color-deep-teal)" }}
+              >
+                {onlySelected ? "Voir tous les sites" : `Voir la sélection (${selectedUrls.size})`}
+              </button>
+              <button
+                onClick={() => setSelectedUrls(new Set())}
+                disabled={running}
+                className="text-xs cursor-pointer hover:underline disabled:opacity-50"
+                style={mutedText}
+              >
+                Vider la sélection
+              </button>
+            </div>
           )}
         </div>
-        <div className="max-h-80 overflow-y-auto space-y-1">
+        <div className="max-h-64 overflow-y-auto space-y-1">
           {filteredSites.map((site) => (
             <label
               key={site.url}
@@ -334,6 +357,20 @@ export function AddPluginTab({ onInstalled }: { onInstalled: () => void }) {
             ? `${selectedZip.name} v${selectedZip.version} sur ${selectedUrls.size} site${selectedUrls.size > 1 ? "s" : ""}`
             : "Choisis d'abord un zip."}
         </p>
+        {isBreakdance && (
+          <label className="block mb-4 text-xs" style={mutedText}>
+            Clé de licence Breakdance (facultative) — appliquée sur chaque site après l&apos;installation
+            <input
+              type="text"
+              value={licenseKey}
+              onChange={(e) => setLicenseKey(e.target.value)}
+              disabled={running}
+              placeholder="Sans clé, seule l'installation est faite"
+              className="block mt-1 w-full max-w-md px-3 py-2 rounded-lg border text-sm"
+              style={{ borderColor: "rgba(23,25,28,0.15)", color: "var(--color-ink)" }}
+            />
+          </label>
+        )}
         <button
           onClick={handleInstall}
           disabled={!selectedZip || selectedUrls.size === 0 || running}

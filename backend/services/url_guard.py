@@ -4,7 +4,7 @@ import os
 import socket
 from urllib.parse import urlparse
 
-from .config import RESULTS_FILE
+from .config import RESULTS_FILE, TEST_RESULTS_FILE
 
 
 class UrlRejected(ValueError):
@@ -41,14 +41,16 @@ def _check_public(url: str) -> None:
 
 
 def _known_hosts() -> set[str]:
-    """Hôtes de results.json. Fichier absent, illisible ou vide : ensemble vide, donc tout
+    """Hôtes de results.json (et du fichier de l'onglet Test). Fichier absent, illisible ou vide : ensemble vide, donc tout
     est refusé — un garde de sécurité ne doit pas s'ouvrir quand son référentiel manque."""
-    try:
-        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
-            entries = json.load(f)
-    except (OSError, ValueError):
-        return set()
-    hosts = {host_of(e.get("url", "")) for e in entries if isinstance(e, dict)}
+    hosts: set[str] = set()
+    for path in (RESULTS_FILE, TEST_RESULTS_FILE):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+        except (OSError, ValueError):
+            continue
+        hosts |= {host_of(e.get("url", "")) for e in entries if isinstance(e, dict)}
     hosts.discard("")
     return hosts
 
