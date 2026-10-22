@@ -16,3 +16,12 @@ LAST_AUDIT_FILE = os.path.join(DATA_DIR, "last_audit.json")
 # toucher aux résultats du parc.
 TEST_RESULTS_FILE = os.path.join(DATA_DIR, "test_results.json")
 TEST_LAST_AUDIT_FILE = os.path.join(DATA_DIR, "test_last_audit.json")
+
+
+def scope_files(scope: str) -> tuple[str, str]:
+    """(fichier de résultats, fichier du dernier audit) du parc ou de l'onglet Test."""
+    if scope == "parc":
+        return RESULTS_FILE, LAST_AUDIT_FILE
+    if scope == "test":
+        return TEST_RESULTS_FILE, TEST_LAST_AUDIT_FILE
+    raise ValueError(f"scope invalide : {scope!r} (parc ou test)")

@@ -285,7 +285,7 @@ export default function SanteDesSitesPage() {
 
   const auditRunning = launchingAudit || (!!auditProgress && auditProgress.status === "running");
 
-  const handleLaunchAudit = async (limit?: number, randomSample?: boolean) => {
+  const handleLaunchAudit = async () => {
     if (auditRunning) return; // Anti double-clic : un audit tourne déjà
 
     setAuditError(null);
@@ -295,7 +295,7 @@ export default function SanteDesSitesPage() {
     // ce qui poussait à cliquer plusieurs fois.
     setAuditProgress({ status: "running", percent: 0, label: "Lancement de l'audit..." });
     try {
-      await axios.post(`${API_URL}/scan`, limit ? { limit, random_sample: !!randomSample } : {});
+      await axios.post(`${API_URL}/scan`, {});
     } catch (error) {
       console.error("[audit] Erreur lancement audit:", error);
       setAuditProgress(null);

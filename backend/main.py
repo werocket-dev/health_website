@@ -30,10 +30,8 @@ from audit_engine import (
     install_plugin_zip,
     refresh_site_in_results,
     call_pb_worker,
-    RESULTS_FILE,
-    LAST_AUDIT_FILE,
 )
-from services.config import TEST_RESULTS_FILE, TEST_LAST_AUDIT_FILE
+from services.config import RESULTS_FILE, LAST_AUDIT_FILE, scope_files
 from services.pocketbase_client import is_php_obsolete
 from services import breakdance_zip, job_guard, plugin_zip, url_guard
 
@@ -63,13 +61,36 @@ def _check_site_url(url: str, require_known: bool = True):
     except url_guard.UrlRejected as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+async def _check_site_urls(urls: List[str]):
+    """Valide plusieurs URLs d'un coup : la liste des sites connus est lue une seule fois, et les
+    résolutions DNS (bloquantes) tournent hors de la boucle d'événements."""
+    known = url_guard.known_hosts()
+
+    def check_all():
+        for url in urls:
+            url_guard.validate_site_url(url, known=known)
+
+    import asyncio
+    try:
+        await asyncio.to_thread(check_all)
+    except url_guard.UrlRejected as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+def _read_entries(path: str) -> list:
+    """Entrées d'un fichier de résultats ; fichier absent ou illisible : liste vide."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [e for e in entries if isinstance(e, dict)]
+
 def _results_files(scope: str) -> tuple[str, str]:
     """(fichier de résultats, fichier du dernier audit) du parc ou de l'onglet Test."""
-    if scope == "parc":
-        return RESULTS_FILE, LAST_AUDIT_FILE
-    if scope == "test":
-        return TEST_RESULTS_FILE, TEST_LAST_AUDIT_FILE
-    raise HTTPException(status_code=400, detail="scope invalide (parc ou test)")
+    try:
+        return scope_files(scope)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="scope invalide (parc ou test)")
 
 def require_api_key(x_api_key: str = Header(default="")):
     # Comparaison en octets : compare_digest lève une TypeError sur du non-ASCII (500 au lieu de 401).
@@ -228,6 +249,34 @@ def _is_http_error(d: dict) -> bool:
 # Dossier de l'agent WeRocket côté WordPress : jamais proposé à la suppression.
 AGENT_PLUGIN_FOLDER = "werocket-agent"
 
+def _compute_installed_plugins(data: list[dict]) -> list[dict]:
+    """Tous les plugins installés (pas seulement ceux à mettre à jour), groupés par chemin
+    dossier/fichier.php : sert à l'onglet de suppression. L'agent WeRocket est exclu : il
+    refuse de se supprimer lui-même, inutile de le proposer."""
+    installed_agg: dict[str, dict] = {}
+    for d in data:
+        for p in d.get("plugins_installed") or []:
+            path = p.get("path") or ""
+            if not path or path.split("/")[0] == AGENT_PLUGIN_FOLDER:
+                continue
+            agg = installed_agg.setdefault(path, {"plugin_name": p.get("name") or path, "sites": {}})
+            agg["sites"][d.get("url")] = {
+                "client": d.get("client"), "url": d.get("url"),
+                "version": p.get("version"), "is_active": p.get("is_active"),
+            }
+    return sorted(
+        (
+            {
+                "plugin_path": path,
+                "plugin_name": v["plugin_name"],
+                "sites_count": len(v["sites"]),
+                "sites": list(v["sites"].values()),
+            }
+            for path, v in installed_agg.items()
+        ),
+        key=lambda x: (-x["sites_count"], x["plugin_name"].lower()),
+    )
+
 def _compute_recap_from_results(data: list[dict]) -> dict:
     # Sites dont l'accueil répond 4xx/5xx (403 pare-feu, 500 erreur critique...) :
     # la capture est alors une page d'erreur, le score IA n'a pas de sens — on les
@@ -275,33 +324,6 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
         reverse=True,
     )
 
-    # Tous les plugins installés (pas seulement ceux à mettre à jour), groupés par chemin
-    # dossier/fichier.php : sert à l'onglet de suppression. L'agent WeRocket est exclu : il
-    # refuse de se supprimer lui-même, inutile de le proposer.
-    installed_agg: dict[str, dict] = {}
-    for d in data:
-        for p in d.get("plugins_installed") or []:
-            path = p.get("path") or ""
-            if not path or path.split("/")[0] == AGENT_PLUGIN_FOLDER:
-                continue
-            agg = installed_agg.setdefault(path, {"plugin_name": p.get("name") or path, "sites": {}})
-            agg["sites"][d.get("url")] = {
-                "client": d.get("client"), "url": d.get("url"),
-                "version": p.get("version"), "is_active": p.get("is_active"),
-            }
-    installed_plugins = sorted(
-        (
-            {
-                "plugin_path": path,
-                "plugin_name": v["plugin_name"],
-                "sites_count": len(v["sites"]),
-                "sites": list(v["sites"].values()),
-            }
-            for path, v in installed_agg.items()
-        ),
-        key=lambda x: (-x["sites_count"], x["plugin_name"].lower()),
-    )
-
     php_obsolete = [
         {"client": d.get("client"), "url": d.get("url"), "php_version": d.get("php_version")}
         for d in data
@@ -340,7 +362,6 @@ def _compute_recap_from_results(data: list[dict]) -> dict:
         "ia_faible": ia_faible,
         "http_erreur": http_erreur,
         "plugin_frequency": plugin_frequency,
-        "installed_plugins": installed_plugins,
         "php_obsolete": php_obsolete,
         "methode_counts": methode_counts,
         "breakdance_licenses_a_verifier": breakdance_licenses_a_verifier,
@@ -411,14 +432,8 @@ async def launch_scan(
         if scope != "test":
             raise HTTPException(status_code=400, detail="Le choix de sites n'est possible que dans l'onglet Test")
         urls = list(dict.fromkeys(scan_request.urls))
-        for u in urls:
-            _check_site_url(u)  # sites connus uniquement
-        names = {}
-        try:
-            with open(RESULTS_FILE, "r", encoding="utf-8") as f:
-                names = {e.get("url"): e.get("client") for e in json.load(f) if isinstance(e, dict)}
-        except (OSError, ValueError):
-            pass
+        await _check_site_urls(urls)  # sites connus uniquement
+        names = {e.get("url"): e.get("client") for e in _read_entries(RESULTS_FILE)}
         sites_list = [{"Client": names.get(u) or u, "URL": u} for u in urls]
     elif scan_request and scan_request.url:
         _check_site_url(scan_request.url, require_known=False)  # nouveau site possible : seul le contrôle d'IP
@@ -723,8 +738,7 @@ async def breakdance_install_and_activate(request: Request, body: BreakdanceInst
     sites = list({s.url: s for s in body.sites}.values())
     if not sites:
         raise HTTPException(status_code=400, detail="Aucun site sélectionné")
-    for site in sites:
-        _check_site_url(site.url)
+    await _check_site_urls([s.url for s in sites])
 
     print(f"[audit] /api/breakdance/install-and-activate from {request.client.host} sites={len(sites)}")
     job_id = uuid.uuid4().hex
@@ -756,12 +770,8 @@ def breakdance_job_status(job_id: str):
 @app.get("/api/sites", dependencies=[Depends(require_api_key)])
 def list_sites(scope: str = "parc"):
     """Sites connus (results.json, ou ceux de l'onglet Test), pour choisir où agir."""
-    try:
-        with open(_results_files(scope)[0], "r", encoding="utf-8") as f:
-            entries = json.load(f)
-    except (OSError, ValueError):
-        return {"sites": []}
-    sites = [{"client": e.get("client", ""), "url": e["url"]} for e in entries if isinstance(e, dict) and e.get("url")]
+    entries = _read_entries(_results_files(scope)[0])
+    sites = [{"client": e.get("client", ""), "url": e["url"]} for e in entries if e.get("url")]
     return {"sites": sorted(sites, key=lambda s: s["client"].lower())}
 
 @app.post("/api/plugins/zip", dependencies=[Depends(require_api_key)])
@@ -817,9 +827,24 @@ class PluginInstallRequest(BaseModel):
     urls: List[str]
     license_key: Optional[str] = None # Breakdance uniquement : appliquée après l'installation
 
+class PluginDeleteRequest(BaseModel):
+    plugin_path: str
+    urls: List[str]
+
+class PluginRefreshRequest(BaseModel):
+    scope: str = "parc"
+
+_PLUGIN_PATH_RE = re.compile(r"^[a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+\.php$")
+
 _pz_jobs: dict = {}
 
-async def _run_plugin_install_job(job_id: str, slug: str, urls: List[str], license_key: Optional[str] = None):
+async def _run_site_job(job_id: str, urls: List[str], action, label: str, refresh_after: bool = True):
+    """Exécute `action(url, state)` sur chaque site, avec les protections communes des jobs de
+    masse : 2 sites en parallèle, pause entre deux sites, arrêt si le serveur ou le pare-feu bloque.
+
+    `action` tourne dans un thread et renvoie {"success": bool, "error": str} ; en cas de succès,
+    {"message": str, "status": "done" (défaut) ou "error", "fields": {...}} est publié dans l'état
+    du site. Avec refresh_after, results.json est relu pour ce site avant le statut final."""
     import asyncio, random
     job = _pz_jobs[job_id]
     sem = asyncio.Semaphore(_BD_CONCURRENCY)
@@ -836,49 +861,24 @@ async def _run_plugin_install_job(job_id: str, slug: str, urls: List[str], licen
                     job["aborted_reason"] = guard.aborted_reason
                     return
 
-                meta = plugin_zip.get_meta(slug)
-                if not meta:
-                    raise RuntimeError("Zip du plugin introuvable (supprimé ?)")
                 state["status"] = "installing"
-                # Lien généré au moment de traiter CE site : il n'expire pas pendant l'attente.
-                zip_url = plugin_zip.build_download_url(slug, meta["sha256"])
-                inst = await asyncio.to_thread(install_plugin_zip, url, zip_url, meta["sha256"])
-                if not inst.get("success"):
-                    msg = inst.get("error", "Erreur inconnue")
+                res = await asyncio.to_thread(action, url, state)
+                if not res.get("success"):
+                    msg = res.get("error", "Erreur inconnue")
                     guard.record(ip, job_guard.classify_error(msg))
                     job["aborted_reason"] = guard.aborted_reason
-                    print(f"[audit] ❌ installation {slug} échouée pour {url}: {msg}")
+                    print(f"[audit] ❌ {label} échoué pour {url}: {msg}")
                     state.update(status="error", message=msg)
                     return
                 guard.record(ip, "ok")
 
-                final_status, final_message = "done", inst.get("message", "Installé")
-                key = (license_key or "").strip()
-                if key and slug == "breakdance":
-                    state.update(status="installing", message="Activation de la licence…")
-                    act = await asyncio.to_thread(activate_license_via_agent, url, key)
-                    if act.get("success"):
-                        final_message = act.get("message", "Installé et licence activée")
-                    else:
-                        err = act.get("error", "Activation échouée")
-                        print(f"[audit] ❌ activation licence échouée pour {url}: {err}")
-                        final_status, final_message = "error", f"Installé, mais licence non activée : {err}"
-                elif slug == "breakdance":
-                    final_message = "Installé (aucune clé fournie, licence non activée)"
-
-                refresh = await asyncio.to_thread(refresh_site_in_results, url)
-                if not refresh.get("success"):
-                    print(f"[audit] ⚠️  results.json non rafraîchi pour {url}: {refresh.get('error')}")
-                state.update(
-                    status=final_status,
-                    message=final_message,
-                    installed=inst.get("installed"),
-                    old_version=inst.get("old_version"),
-                    new_version=inst.get("new_version"),
-                    is_active=inst.get("is_active"),
-                )
+                if refresh_after:
+                    refresh = await asyncio.to_thread(refresh_site_in_results, url)
+                    if not refresh.get("success"):
+                        print(f"[audit] ⚠️  results.json non rafraîchi pour {url}: {refresh.get('error')}")
+                state.update(status=res.get("status", "done"), message=res.get("message"), **res.get("fields", {}))
             except Exception as e:
-                print(f"[audit] ❌ installation {slug} : erreur inattendue pour {url}: {e}")
+                print(f"[audit] ❌ {label} : erreur inattendue pour {url}: {e}")
                 state.update(status="error", message=str(e)[:200])
             finally:
                 await asyncio.sleep(random.uniform(*_BD_PACE_SECONDS))
@@ -888,12 +888,66 @@ async def _run_plugin_install_job(job_id: str, slug: str, urls: List[str], licen
     finally:
         job["finished"] = True
 
+def _start_site_job(slug: str, urls: List[str], action, label: str, refresh_after: bool = True) -> str:
+    """Crée le job (un seul à la fois, tous types confondus) et le lance en arrière-plan."""
+    import asyncio, uuid
+    if any(not j["finished"] for j in list(_pz_jobs.values()) + list(_bd_jobs.values())):
+        raise HTTPException(status_code=409, detail="Une opération est déjà en cours")
+    job_id = uuid.uuid4().hex
+    _pz_jobs[job_id] = {
+        "finished": False,
+        "aborted_reason": None,
+        "slug": slug,
+        "sites": {u: {"status": "pending"} for u in urls},
+    }
+    for old in list(_pz_jobs)[:-10]:
+        if _pz_jobs[old]["finished"]:
+            del _pz_jobs[old]
+    task = asyncio.create_task(_run_site_job(job_id, urls, action, label, refresh_after))
+    _bd_tasks.add(task)
+    task.add_done_callback(_bd_tasks.discard)
+    return job_id
+
+def _install_action(slug: str, license_key: Optional[str]):
+    key = (license_key or "").strip()
+
+    def action(url: str, state: dict) -> dict:
+        meta = plugin_zip.get_meta(slug)
+        if not meta:
+            raise RuntimeError("Zip du plugin introuvable (supprimé ?)")
+        # Lien généré au moment de traiter CE site : il n'expire pas pendant l'attente.
+        zip_url = plugin_zip.build_download_url(slug, meta["sha256"])
+        inst = install_plugin_zip(url, zip_url, meta["sha256"])
+        if not inst.get("success"):
+            return inst
+
+        status, message = "done", inst.get("message", "Installé")
+        if slug == "breakdance":
+            if key:
+                state.update(message="Activation de la licence…")
+                act = activate_license_via_agent(url, key)
+                if act.get("success"):
+                    message = act.get("message", "Installé et licence activée")
+                else:
+                    err = act.get("error", "Activation échouée")
+                    print(f"[audit] ❌ activation licence échouée pour {url}: {err}")
+                    status, message = "error", f"Installé, mais licence non activée : {err}"
+            else:
+                message = "Installé (aucune clé fournie, licence non activée)"
+        return {
+            "success": True, "status": status, "message": message,
+            "fields": {k: inst.get(k) for k in ("installed", "old_version", "new_version", "is_active")},
+        }
+    return action
+
+async def _run_plugin_install_job(job_id: str, slug: str, urls: List[str], license_key: Optional[str] = None):
+    await _run_site_job(job_id, urls, _install_action(slug, license_key), f"installation {slug}")
+
 @app.post("/api/plugins/install", dependencies=[Depends(require_api_key)])
 async def install_plugin_on_sites(request: Request, body: PluginInstallRequest):
     """Installe (ou met à jour) le zip stocké sur les sites choisis, en arrière-plan. Suivi par
     GET /api/plugins/jobs/{job_id}. Un plugin déjà présent est remplacé en gardant son état
     d'activation ; une nouvelle installation est activée."""
-    import asyncio, uuid
     meta = plugin_zip.get_meta(body.slug)
     if not meta:
         raise HTTPException(status_code=404, detail="Zip introuvable : uploade-le d'abord")
@@ -901,191 +955,72 @@ async def install_plugin_on_sites(request: Request, body: PluginInstallRequest):
         plugin_zip.build_download_url(body.slug, "0" * 64)  # échoue tôt : PUBLIC_BACKEND_URL absent ou non HTTPS
     except plugin_zip.ZipError as e:
         raise HTTPException(status_code=500, detail=str(e))
-    if any(not j["finished"] for j in list(_pz_jobs.values()) + list(_bd_jobs.values())):
-        raise HTTPException(status_code=409, detail="Une installation est déjà en cours")
 
     urls = list(dict.fromkeys(body.urls))
     if not urls:
         raise HTTPException(status_code=400, detail="Aucun site sélectionné")
-    for url in urls:
-        _check_site_url(url)
+    await _check_site_urls(urls)
 
     print(f"[audit] /api/plugins/install from {request.client.host} plugin={body.slug} v{meta['version']} sites={len(urls)}")
-    job_id = uuid.uuid4().hex
-    _pz_jobs[job_id] = {
-        "finished": False,
-        "aborted_reason": None,
-        "slug": body.slug,
-        "sites": {u: {"status": "pending"} for u in urls},
-    }
-    for old in list(_pz_jobs)[:-10]:
-        if _pz_jobs[old]["finished"]:
-            del _pz_jobs[old]
-
-    task = asyncio.create_task(_run_plugin_install_job(job_id, body.slug, urls, body.license_key))
-    _bd_tasks.add(task)
-    task.add_done_callback(_bd_tasks.discard)
+    job_id = _start_site_job(
+        body.slug, urls, _install_action(body.slug, body.license_key), f"installation {body.slug}"
+    )
     return {"job_id": job_id}
 
-class PluginRefreshRequest(BaseModel):
-    scope: str = "parc"
-
-async def _run_plugin_refresh_job(job_id: str, urls: List[str]):
-    """Relit l'agent de chaque site (lecture seule, sans capture ni IA) pour remettre à jour
-    sa liste de plugins dans les résultats."""
-    import asyncio, random
-    job = _pz_jobs[job_id]
-    sem = asyncio.Semaphore(_BD_CONCURRENCY)
-    guard = job_guard.JobGuard()
-
-    async def one(url: str):
-        state = job["sites"][url]
-        async with sem:
-            try:
-                ip = await asyncio.to_thread(job_guard.resolve_ip, url)
-                skip = guard.skip_reason(ip)
-                if skip:
-                    state.update(status="skipped", message=skip)
-                    job["aborted_reason"] = guard.aborted_reason
-                    return
-
-                state["status"] = "installing"
-                res = await asyncio.to_thread(refresh_site_in_results, url)
-                if not res.get("success"):
-                    msg = res.get("error", "Erreur inconnue")
-                    guard.record(ip, job_guard.classify_error(msg))
-                    job["aborted_reason"] = guard.aborted_reason
-                    state.update(status="error", message=msg)
-                    return
-                guard.record(ip, "ok")
-                state.update(status="done", message="Liste mise à jour")
-            except Exception as e:
-                state.update(status="error", message=str(e)[:200])
-            finally:
-                await asyncio.sleep(random.uniform(*_BD_PACE_SECONDS))
-
-    try:
-        await asyncio.gather(*(one(u) for u in urls))
-    finally:
-        job["finished"] = True
-
-@app.post("/api/plugins/refresh", dependencies=[Depends(require_api_key)])
-async def refresh_plugins_list(request: Request, body: PluginRefreshRequest):
-    """Met à jour la liste des plugins installés de tous les sites du parc (ou de l'onglet Test),
-    en arrière-plan. Suivi par GET /api/plugins/jobs/{job_id}, comme l'installation."""
-    import asyncio, uuid
-    results_file, _ = _results_files(body.scope)
-    if any(not j["finished"] for j in list(_pz_jobs.values()) + list(_bd_jobs.values())):
-        raise HTTPException(status_code=409, detail="Une opération est déjà en cours")
-    try:
-        with open(results_file, "r", encoding="utf-8") as f:
-            entries = json.load(f)
-    except (OSError, ValueError):
-        entries = []
-    urls = list(dict.fromkeys(e["url"] for e in entries if isinstance(e, dict) and e.get("url")))
-    if not urls:
-        raise HTTPException(status_code=400, detail="Aucun site connu : lance d'abord un audit")
-
-    print(f"[audit] /api/plugins/refresh from {request.client.host} scope={body.scope} sites={len(urls)}")
-    job_id = uuid.uuid4().hex
-    _pz_jobs[job_id] = {
-        "finished": False,
-        "aborted_reason": None,
-        "slug": "refresh",
-        "sites": {u: {"status": "pending"} for u in urls},
-    }
-    for old in list(_pz_jobs)[:-10]:
-        if _pz_jobs[old]["finished"]:
-            del _pz_jobs[old]
-
-    task = asyncio.create_task(_run_plugin_refresh_job(job_id, urls))
-    _bd_tasks.add(task)
-    task.add_done_callback(_bd_tasks.discard)
-    return {"job_id": job_id}
-
-class PluginDeleteRequest(BaseModel):
-    plugin_path: str
-    urls: List[str]
-
-_PLUGIN_PATH_RE = re.compile(r"^[a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+\.php$")
+def _delete_action(plugin_path: str):
+    def action(url: str, state: dict) -> dict:
+        res = delete_plugin_via_agent(url, plugin_path)
+        if not res.get("success"):
+            return res
+        return {"success": True, "message": res.get("message", "Supprimé"), "fields": {"deleted": True}}
+    return action
 
 async def _run_plugin_delete_job(job_id: str, plugin_path: str, urls: List[str]):
-    import asyncio, random
-    job = _pz_jobs[job_id]
-    sem = asyncio.Semaphore(_BD_CONCURRENCY)
-    guard = job_guard.JobGuard()
-
-    async def one(url: str):
-        state = job["sites"][url]
-        async with sem:
-            try:
-                ip = await asyncio.to_thread(job_guard.resolve_ip, url)
-                skip = guard.skip_reason(ip)
-                if skip:
-                    state.update(status="skipped", message=skip)
-                    job["aborted_reason"] = guard.aborted_reason
-                    return
-
-                state["status"] = "installing"
-                res = await asyncio.to_thread(delete_plugin_via_agent, url, plugin_path)
-                if not res.get("success"):
-                    msg = res.get("error", "Erreur inconnue")
-                    guard.record(ip, job_guard.classify_error(msg))
-                    job["aborted_reason"] = guard.aborted_reason
-                    print(f"[audit] ❌ suppression {plugin_path} échouée pour {url}: {msg}")
-                    state.update(status="error", message=msg)
-                    return
-                guard.record(ip, "ok")
-
-                refresh = await asyncio.to_thread(refresh_site_in_results, url)
-                if not refresh.get("success"):
-                    print(f"[audit] ⚠️  results.json non rafraîchi pour {url}: {refresh.get('error')}")
-                state.update(status="done", message=res.get("message", "Supprimé"), deleted=True)
-            except Exception as e:
-                print(f"[audit] ❌ suppression {plugin_path} : erreur inattendue pour {url}: {e}")
-                state.update(status="error", message=str(e)[:200])
-            finally:
-                await asyncio.sleep(random.uniform(*_BD_PACE_SECONDS))
-
-    try:
-        await asyncio.gather(*(one(u) for u in urls))
-    finally:
-        job["finished"] = True
+    await _run_site_job(job_id, urls, _delete_action(plugin_path), f"suppression {plugin_path}")
 
 @app.post("/api/plugins/delete", dependencies=[Depends(require_api_key)])
 async def delete_plugin_on_sites(request: Request, body: PluginDeleteRequest):
     """Supprime un plugin (désactivation + fichiers) sur les sites choisis, en arrière-plan.
     Suivi par GET /api/plugins/jobs/{job_id}, comme l'installation."""
-    import asyncio, uuid
     if not _PLUGIN_PATH_RE.match(body.plugin_path):
         raise HTTPException(status_code=400, detail="Chemin de plugin invalide (attendu : dossier/fichier.php)")
     if body.plugin_path.split("/")[0] == AGENT_PLUGIN_FOLDER:
         raise HTTPException(status_code=400, detail="L'agent WeRocket ne peut pas être supprimé")
-    if any(not j["finished"] for j in list(_pz_jobs.values()) + list(_bd_jobs.values())):
-        raise HTTPException(status_code=409, detail="Une opération est déjà en cours")
 
     urls = list(dict.fromkeys(body.urls))
     if not urls:
         raise HTTPException(status_code=400, detail="Aucun site sélectionné")
-    for url in urls:
-        _check_site_url(url)
+    await _check_site_urls(urls)
 
     print(f"[audit] /api/plugins/delete from {request.client.host} plugin={body.plugin_path} sites={len(urls)}")
-    job_id = uuid.uuid4().hex
-    _pz_jobs[job_id] = {
-        "finished": False,
-        "aborted_reason": None,
-        "slug": body.plugin_path,
-        "sites": {u: {"status": "pending"} for u in urls},
-    }
-    for old in list(_pz_jobs)[:-10]:
-        if _pz_jobs[old]["finished"]:
-            del _pz_jobs[old]
-
-    task = asyncio.create_task(_run_plugin_delete_job(job_id, body.plugin_path, urls))
-    _bd_tasks.add(task)
-    task.add_done_callback(_bd_tasks.discard)
+    job_id = _start_site_job(
+        body.plugin_path, urls, _delete_action(body.plugin_path), f"suppression {body.plugin_path}"
+    )
     return {"job_id": job_id}
+
+def _refresh_action(url: str, state: dict) -> dict:
+    res = refresh_site_in_results(url)
+    return res if not res.get("success") else {"success": True, "message": "Liste mise à jour"}
+
+@app.post("/api/plugins/refresh", dependencies=[Depends(require_api_key)])
+async def refresh_plugins_list(request: Request, body: PluginRefreshRequest):
+    """Relit chaque site du parc (ou de l'onglet Test) : plugins, mises à jour, thèmes, licences,
+    versions — sans capture ni IA. En arrière-plan, suivi par GET /api/plugins/jobs/{job_id}."""
+    entries = _read_entries(_results_files(body.scope)[0])
+    urls = list(dict.fromkeys(e["url"] for e in entries if isinstance(e, dict) and e.get("url")))
+    if not urls:
+        raise HTTPException(status_code=400, detail="Aucun site connu : lance d'abord un audit")
+
+    print(f"[audit] /api/plugins/refresh from {request.client.host} scope={body.scope} sites={len(urls)}")
+    # refresh_after=False : l'action elle-même relit le site et réécrit results.json.
+    job_id = _start_site_job("refresh", urls, _refresh_action, "actualisation", refresh_after=False)
+    return {"job_id": job_id}
+
+@app.get("/api/plugins/installed", dependencies=[Depends(require_api_key)])
+def list_installed_plugins(scope: str = "parc"):
+    """Plugins installés sur les sites, avec leurs sites (onglet Supprimer un plugin). À part du
+    récap : la liste est volumineuse (tous les plugins de tous les sites) et ne sert qu'à cet onglet."""
+    return {"plugins": _compute_installed_plugins(_read_entries(_results_files(scope)[0]))}
 
 @app.get("/api/plugins/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def plugin_install_job_status(job_id: str):

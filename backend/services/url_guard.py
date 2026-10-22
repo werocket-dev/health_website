@@ -55,11 +55,15 @@ def _known_hosts() -> set[str]:
     return hosts
 
 
-def validate_site_url(url: str, require_known: bool = True) -> None:
+def known_hosts() -> set[str]:
+    return _known_hosts()
+
+
+def validate_site_url(url: str, require_known: bool = True, known: set[str] | None = None) -> None:
     """Refuse les URLs qui ne sont pas un site public. Avec require_known, n'accepte
     que les sites déjà audités (results.json) : le backend ne signe et n'envoie des
     ordres qu'à des sites connus. Sans results.json lisible, tout est refusé."""
     _check_public(url)
     if require_known:
-        if host_of(url) not in _known_hosts():
+        if host_of(url) not in (known if known is not None else _known_hosts()):
             raise UrlRejected("Site inconnu : il doit d'abord être audité")

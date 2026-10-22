@@ -108,9 +108,10 @@ class PluginApiTests(unittest.TestCase):
         import main
         from fastapi.testclient import TestClient
         main._BACKEND_API_KEY = "test-key"
-        patcher = mock.patch.object(main, "RESULTS_FILE", results)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (("RESULTS_FILE", results), ("scope_files", lambda scope: (results, results))):
+            patcher = mock.patch.object(main, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.main = main
         self.client = TestClient(main.app)
         self.h = {"X-API-Key": "test-key"}
@@ -162,6 +163,42 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual({s["status"] for s in job["sites"].values()}, {"done"})
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(c[1].startswith("https://backend.test/dl/plugin/mon-plugin/") and c[2] == meta["sha256"] for c in calls))
+
+    def test_suppression_et_actualisation(self):
+        urls = ["https://a.fr", "https://b.fr"]
+        deleted = []
+
+        def fake_delete(url, path):
+            deleted.append((url, path))
+            return {"success": True, "message": "Plugin supprimé"}
+
+        def run(job_coro_factory):
+            self.main._pz_jobs.clear()
+            self.main._pz_jobs["j"] = {"finished": False, "aborted_reason": None, "slug": "x",
+                                       "sites": {u: {"status": "pending"} for u in urls}}
+            asyncio.run(job_coro_factory())
+            return self.client.get("/api/plugins/jobs/j", headers=self.h).json()
+
+        with mock.patch.object(self.main, "delete_plugin_via_agent", fake_delete), \
+             mock.patch.object(self.main, "refresh_site_in_results", lambda url: {"success": True}):
+            job = run(lambda: self.main._run_plugin_delete_job("j", "akismet/akismet.php", urls))
+        self.assertTrue(job["finished"])
+        self.assertEqual({s["status"] for s in job["sites"].values()}, {"done"})
+        self.assertEqual(sorted(deleted), [(u, "akismet/akismet.php") for u in urls])
+
+        # Un échec de l'agent est remonté sur le site concerné, sans bloquer les autres
+        def fake_refresh(url):
+            return {"success": url == "https://a.fr", "error": "Agent injoignable"}
+
+        with mock.patch.object(self.main, "refresh_site_in_results", fake_refresh):
+            job = run(lambda: self.main._run_site_job("j", urls, self.main._refresh_action, "actualisation", False))
+        self.assertEqual(job["sites"]["https://a.fr"]["status"], "done")
+        self.assertEqual(job["sites"]["https://b.fr"]["status"], "error")
+
+    def test_suppression_refuse_l_agent_et_un_chemin_invalide(self):
+        for path in ("werocket-agent/werocket-agent.php", "../etc/passwd", "akismet.php"):
+            r = self.client.post("/api/plugins/delete", json={"plugin_path": path, "urls": ["https://a.fr"]}, headers=self.h)
+            self.assertEqual(r.status_code, 400, path)
 
     def test_refuse_site_inconnu_et_slug_inconnu(self):
         self._upload()

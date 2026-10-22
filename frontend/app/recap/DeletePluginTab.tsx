@@ -1,8 +1,9 @@
 "use client";
 
 import axios from "axios";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
+import { errorDetail, pollJob, type Scope } from "@/lib/jobs";
 
 const API_URL = "/api/backend";
 
@@ -29,12 +30,28 @@ const STATUS_LABEL: Record<SiteJob["status"], string> = {
 const DANGER = "#dc2626";
 const mutedText = { color: "rgba(23,25,28,0.5)" };
 
-function errorDetail(e: unknown, fallback: string): string {
-  const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
-  return typeof detail === "string" ? detail : fallback;
-}
+export function DeletePluginTab({
+  scope,
+  reloadKey,
+  onDeleted,
+}: {
+  scope: Scope;
+  reloadKey: number;
+  onDeleted: () => void;
+}) {
+  // Liste à part du récap (volumineuse) : chargée à l'ouverture de l'onglet et après chaque rechargement.
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    axios
+      .get<{ plugins: InstalledPlugin[] }>(`${API_URL}/plugins/installed`, { params: { scope } })
+      .then(({ data }) => {
+        setPlugins(data.plugins);
+        setLoadError(null);
+      })
+      .catch(() => setLoadError("Impossible de charger la liste des plugins."));
+  }, [scope, reloadKey]);
 
-export function DeletePluginTab({ plugins, onDeleted }: { plugins: InstalledPlugin[]; onDeleted: () => void }) {
 
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -60,14 +77,6 @@ export function DeletePluginTab({ plugins, onDeleted }: { plugins: InstalledPlug
       return sites.length === 0 ? [] : [{ ...p, sites, sites_count: sites.length }];
     });
   }, [plugins, query]);
-
-  const toggleSite = (path: string, url: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev[path] ?? []);
-      if (next.has(url)) next.delete(url);
-      else next.add(url);
-      return { ...prev, [path]: next };
-    });
 
   const toggleAll = (path: string, urls: string[], all: boolean) =>
     setSelected((prev) => {
@@ -105,23 +114,14 @@ export function DeletePluginTab({ plugins, onDeleted }: { plugins: InstalledPlug
         urls,
       });
 
-      let done = false;
-      while (!done) {
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const { data: status } = await axios.get<{
-            finished: boolean;
-            aborted_reason: string | null;
-            sites: Record<string, SiteJob>;
-          }>(`${API_URL}/plugins/jobs/${data.job_id}`);
+      // Le job dure plusieurs minutes : on suit sa progression par polling.
+      await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, SiteJob> }>(
+        `/plugins/jobs/${data.job_id}`,
+        (status) => {
           setJob(status.sites);
           setAbortReason(status.aborted_reason);
-          done = status.finished;
-        } catch (e) {
-          // Job perdu (backend redémarré) : inutile de boucler indéfiniment.
-          if (axios.isAxiosError(e) && e.response?.status === 404) throw e;
         }
-      }
+      );
       setFinished(true);
       setSelected((prev) => ({ ...prev, [plugin.plugin_path]: new Set() }));
       onDeleted(); // recharge le récap : le plugin disparaît des sites où il a été supprimé
@@ -132,7 +132,8 @@ export function DeletePluginTab({ plugins, onDeleted }: { plugins: InstalledPlug
     }
   };
 
-  const clientOf = (url: string) => plugins.flatMap((p) => p.sites).find((s) => s.url === url)?.client ?? url;
+  const clientByUrl = useMemo(() => new Map(plugins.flatMap((p) => p.sites.map((s) => [s.url, s.client] as const))), [plugins]);
+  const clientOf = (url: string) => clientByUrl.get(url) ?? url;
   const jobEntries = job ? Object.entries(job) : [];
   const okCount = jobEntries.filter(([, j]) => j.status === "done").length;
   const errorCount = jobEntries.filter(([, j]) => j.status === "error").length;
@@ -144,7 +145,11 @@ export function DeletePluginTab({ plugins, onDeleted }: { plugins: InstalledPlug
         irréversible.
       </p>
 
-      {plugins.length === 0 ? (
+      {loadError ? (
+        <p className="text-sm" style={{ color: DANGER }}>
+          {loadError}
+        </p>
+      ) : plugins.length === 0 ? (
         <p className="text-sm" style={{ color: "#b45309" }}>
           Aucun plugin connu : la liste est enregistrée à chaque audit (méthode Agent). Clique sur « Actualiser (hors IA) »,
           au-dessus des onglets, pour la remplir sans audit complet.
@@ -220,7 +225,7 @@ export function DeletePluginTab({ plugins, onDeleted }: { plugins: InstalledPlug
                           <input
                             type="checkbox"
                             checked={sel.has(site.url)}
-                            onChange={() => toggleSite(p.plugin_path, site.url)}
+                            onChange={() => toggleAll(p.plugin_path, [site.url], sel.has(site.url))}
                             disabled={running}
                           />
                           <span className="flex-1" style={{ color: "var(--color-ink)" }}>

@@ -21,11 +21,10 @@ export function TestView() {
   const [chosen, setChosen] = useState<Site[]>([]);
 
   const [progress, setProgress] = useState<Progress | null>(null);
-  const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const running = launching || progress?.status === "running";
+  const running = progress?.status === "running";
 
   useEffect(() => {
     axios
@@ -73,7 +72,6 @@ export function TestView() {
   const launch = async (body: Record<string, unknown>) => {
     if (running) return;
     setError(null);
-    setLaunching(true);
     setProgress({ status: "running", percent: 0, label: "Lancement du test..." });
     try {
       await axios.post(`${API_URL}/scan`, { scope: "test", ...body });
@@ -88,8 +86,6 @@ export function TestView() {
             ? detail
             : "Erreur lors du lancement du test (le serveur ne répond pas ?)"
       );
-    } finally {
-      setLaunching(false);
     }
   };
 

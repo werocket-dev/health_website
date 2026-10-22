@@ -5,8 +5,9 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LogoutButton } from "@/components/layout/LogoutButton";
 import { Card } from "@/components/ui/Card";
+import { errorDetail, pollJob, type Scope } from "@/lib/jobs";
 import { AddPluginTab } from "./AddPluginTab";
-import { DeletePluginTab, type InstalledPlugin } from "./DeletePluginTab";
+import { DeletePluginTab } from "./DeletePluginTab";
 
 const API_URL = "/api/backend";
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -100,7 +101,6 @@ type RecapData = {
   ia_faible: IAFaibleSite[];
   http_erreur: HttpErrorSite[];
   plugin_frequency: PluginFrequency[];
-  installed_plugins: InstalledPlugin[];
   php_obsolete: PhpObsoleteSite[];
   methode_counts: Record<string, number>;
   breakdance_licenses_a_verifier: BreakdanceLicenseSite[];
@@ -195,7 +195,7 @@ function StatTile({
   );
 }
 
-export type RecapScope = "parc" | "test";
+export type RecapScope = Scope;
 
 // scope « test » : l'échantillon de l'onglet Test (mêmes onglets et mêmes actions que le parc).
 // topSlot s'affiche au-dessus du récap ; reloadKey force un rechargement des données.
@@ -346,14 +346,9 @@ export function RecapView({
     setRefresh({ done: 0, total: 0, running: true, error: null });
     try {
       const { data: started } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/refresh`, { scope });
-      let finished = false;
-      while (!finished) {
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const { data: status } = await axios.get<{
-            finished: boolean;
-            sites: Record<string, { status: string }>;
-          }>(`${API_URL}/plugins/jobs/${started.job_id}`);
+      await pollJob<{ finished: boolean; sites: Record<string, { status: string }> }>(
+        `/plugins/jobs/${started.job_id}`,
+        (status) => {
           const all = Object.values(status.sites);
           setRefresh({
             done: all.filter((j) => ["done", "error", "skipped"].includes(j.status)).length,
@@ -361,16 +356,11 @@ export function RecapView({
             running: !status.finished,
             error: null,
           });
-          finished = status.finished;
-        } catch (e) {
-          // Job perdu (backend redémarré) : inutile de boucler indéfiniment.
-          if (axios.isAxiosError(e) && e.response?.status === 404) throw e;
         }
-      }
+      );
       setRetryCount((c) => c + 1); // recharge le récap avec les données relues
     } catch (e) {
-      const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
-      setRefresh({ done: 0, total: 0, running: false, error: typeof detail === "string" ? detail : "Échec de l'actualisation" });
+      setRefresh({ done: 0, total: 0, running: false, error: errorDetail(e, "Échec de l'actualisation") });
     }
   };
 
@@ -402,8 +392,7 @@ export function RecapView({
       });
       setBdZip(data);
     } catch (e) {
-      const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
-      setUploadError(typeof detail === "string" ? detail : "Échec de l'upload");
+      setUploadError(errorDetail(e, "Échec de l'upload"));
     } finally {
       setUploadProgress(null);
     }
@@ -426,27 +415,16 @@ export function RecapView({
       setLicenseKeyInput("");
 
       // Le job dure plusieurs minutes : on suit sa progression par polling.
-      let finished = false;
-      while (!finished) {
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const { data: job } = await axios.get<{
-            finished: boolean;
-            aborted_reason: string | null;
-            sites: Record<string, BreakdanceSiteJob>;
-          }>(`${API_URL}/breakdance/jobs/${data.job_id}`);
+      await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, BreakdanceSiteJob> }>(
+        `/breakdance/jobs/${data.job_id}`,
+        (job) => {
           setBdJob(job.sites);
           setBdAbortReason(job.aborted_reason);
-          finished = job.finished;
-        } catch (e) {
-          // Job perdu (backend redémarré) : inutile de boucler indéfiniment.
-          if (axios.isAxiosError(e) && e.response?.status === 404) throw e;
         }
-      }
+      );
       setRetryCount((c) => c + 1); // recharge le récap avec les nouveaux statuts
     } catch (e) {
-      const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
-      setBdError(typeof detail === "string" ? detail : "Échec du lancement de l'installation");
+      setBdError(errorDetail(e, "Échec du lancement de l'installation"));
     } finally {
       setBdRunning(false);
     }
@@ -465,7 +443,6 @@ export function RecapView({
           ia_faible: data.ia_faible ?? [],
           http_erreur: data.http_erreur ?? [],
           plugin_frequency: data.plugin_frequency ?? [],
-          installed_plugins: data.installed_plugins ?? [],
           php_obsolete: data.php_obsolete ?? [],
           methode_counts: data.methode_counts ?? {},
           breakdance_licenses_a_verifier: data.breakdance_licenses_a_verifier ?? [],
@@ -829,6 +806,7 @@ export function RecapView({
                               {p.sites.map((site) => {
                                 const key = `${site.url}::${p.plugin_slug}`;
                                 const status = updateStatus[key];
+                                const bd = bdJob[site.url];
                                 const { color } = riskColor(site.risk);
                                 return (
                                   <label
@@ -854,21 +832,21 @@ export function RecapView({
                                         {status === "loading" ? "..." : status === "success" ? "✓ OK" : "✗ Erreur"}
                                       </span>
                                     )}
-                                    {p.plugin_slug === "breakdance" && bdJob[site.url] && (
+                                    {p.plugin_slug === "breakdance" && bd && (
                                       <span
-                                        title={bdJob[site.url].message}
+                                        title={bd.message}
                                         style={{
                                           color:
-                                            bdJob[site.url].status === "done"
+                                            bd.status === "done"
                                               ? "#087A61"
-                                              : bdJob[site.url].status === "error"
+                                              : bd.status === "error"
                                                 ? "#dc2626"
                                                 : "rgba(23,25,28,0.55)",
                                         }}
                                       >
-                                        {BREAKDANCE_STATUS_LABEL[bdJob[site.url].status]}
-                                        {bdJob[site.url].status === "error" && bdJob[site.url].message
-                                          ? ` — ${bdJob[site.url].message}`
+                                        {BREAKDANCE_STATUS_LABEL[bd.status]}
+                                        {bd.status === "error" && bd.message
+                                          ? ` — ${bd.message}`
                                           : ""}
                                       </span>
                                     )}
@@ -1011,7 +989,7 @@ export function RecapView({
               {tab === "ajout" && <AddPluginTab scope={scope} onInstalled={() => setRetryCount((n) => n + 1)} />}
 
               {tab === "suppression" && (
-                <DeletePluginTab plugins={data.installed_plugins} onDeleted={() => setRetryCount((n) => n + 1)} />
+                <DeletePluginTab scope={scope} reloadKey={retryCount} onDeleted={() => setRetryCount((n) => n + 1)} />
               )}
 
               {tab === "breakdance" && (

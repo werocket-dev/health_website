@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright
 import json
 from dotenv import load_dotenv
 
-from services.config import RESULTS_FILE, LAST_AUDIT_FILE, TEST_RESULTS_FILE, TEST_LAST_AUDIT_FILE
+from services.config import scope_files
 from services.json_store import results_lock, write_json_atomic, merge_audit_results
 from services import capture_settings as cs
 from services.agent_client import (
@@ -140,10 +140,8 @@ async def run_audit(sites_list=None, progress_callback=None, limit=None, random_
     audit_started_at = datetime.now(timezone.utc).isoformat()
     # Onglet Test (scope="test") : les résultats vont dans leurs propres fichiers, et chaque
     # test remplace le précédent (jamais fusionné avec lui) ; le parc n'est pas touché.
-    is_test = scope == "test"
-    results_file = TEST_RESULTS_FILE if is_test else RESULTS_FILE
-    last_audit_file = TEST_LAST_AUDIT_FILE if is_test else LAST_AUDIT_FILE
-    partial_audit = False if is_test else (sites_list is not None or bool(limit))
+    results_file, last_audit_file = scope_files(scope)
+    partial_audit = scope != "test" and (sites_list is not None or bool(limit))
 
     # 1. Récupération des sites à auditer
     if sites_list is None:

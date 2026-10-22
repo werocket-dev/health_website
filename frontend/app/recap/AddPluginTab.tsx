@@ -3,6 +3,7 @@
 import axios from "axios";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
+import { errorDetail, pollJob, type Scope } from "@/lib/jobs";
 
 const API_URL = "/api/backend";
 
@@ -37,11 +38,6 @@ function formatSize(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} Mo` : `${Math.max(1, Math.round(bytes / 1024))} Ko`;
 }
 
-function errorDetail(e: unknown, fallback: string): string {
-  const detail = axios.isAxiosError(e) ? e.response?.data?.detail : null;
-  return typeof detail === "string" ? detail : fallback;
-}
-
 function doneLabel(job: SiteJob): string {
   if (job.installed) return `✓ Installé${job.new_version ? ` (v${job.new_version})` : ""}`;
   if (job.old_version && job.new_version) return `✓ Mis à jour (${job.old_version} → ${job.new_version})`;
@@ -50,7 +46,7 @@ function doneLabel(job: SiteJob): string {
 
 const mutedText = { color: "rgba(23,25,28,0.5)" };
 
-export function AddPluginTab({ onInstalled, scope = "parc" }: { onInstalled: () => void; scope?: "parc" | "test" }) {
+export function AddPluginTab({ onInstalled, scope = "parc" }: { onInstalled: () => void; scope?: Scope }) {
   const [zips, setZips] = useState<PluginZip[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -169,28 +165,18 @@ export function AddPluginTab({ onInstalled, scope = "parc" }: { onInstalled: () 
       const { data } = await axios.post<{ job_id: string }>(`${API_URL}/plugins/install`, {
         slug: selectedZip.slug,
         urls,
-        license_key: isBreakdance && licenseKey.trim() ? licenseKey.trim() : null,
+        license_key: licenseKey.trim() || null, // le backend ne l'applique qu'à Breakdance
       });
       setLicenseKey("");
 
       // Le job dure plusieurs minutes : on suit sa progression par polling.
-      let done = false;
-      while (!done) {
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const { data: status } = await axios.get<{
-            finished: boolean;
-            aborted_reason: string | null;
-            sites: Record<string, SiteJob>;
-          }>(`${API_URL}/plugins/jobs/${data.job_id}`);
+      await pollJob<{ finished: boolean; aborted_reason: string | null; sites: Record<string, SiteJob> }>(
+        `/plugins/jobs/${data.job_id}`,
+        (status) => {
           setJob(status.sites);
           setAbortReason(status.aborted_reason);
-          done = status.finished;
-        } catch (e) {
-          // Job perdu (backend redémarré) : inutile de boucler indéfiniment.
-          if (axios.isAxiosError(e) && e.response?.status === 404) throw e;
         }
-      }
+      );
       setFinished(true);
       onInstalled(); // recharge le récap avec les nouveaux états
     } catch (e) {
