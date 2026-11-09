@@ -52,6 +52,9 @@ def main():
     elif command == "sync_site_plugins":
         pbc.sync_site_plugins(args["project_id"], args["plugins"])
         result = {"success": True}
+    elif command == "sync_notion":
+        from services import notion_sync
+        result = notion_sync.sync()
     elif command == "write_audit_results":
         result = pbc.write_audit_results(args["entries"])
     else:

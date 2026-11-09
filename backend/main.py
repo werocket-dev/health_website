@@ -457,6 +457,34 @@ async def launch_scan(
         url=scan_request.url if scan_request and scan_request.url else ("BDD" + (f" (limité à {limit})" if limit else ""))
     )
 
+@app.post("/api/sync-notion", dependencies=[Depends(require_api_key)])
+async def sync_notion(background_tasks: BackgroundTasks):
+    """
+    Appelé chaque soir par le cron Dokploy, avant l'audit de nuit : ajoute à PocketBase
+    les sites passés à « Mis en ligne » dans Notion, puis audite tout de suite les nouveaux
+    (en tâche de fond, fusionnés dans results.json sans toucher au reste du parc).
+    """
+    try:
+        result = await asyncio.to_thread(call_pb_worker, "sync_notion", None, 120)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=502, detail=f"Synchronisation Notion échouée : {str(e)[:200]}")
+
+    created = result.get("created", [])
+    audit_started = False
+    if created and not _audit_progress.get("_locked"):
+        _audit_progress.update({"status": "running", "percent": 0, "label": "Audit des nouveaux sites...", "_locked": True})
+        background_tasks.add_task(_run_audit_locked, created, _on_progress, None, False, "parc")
+        audit_started = True
+
+    print(f"[notion] {len(created)} nouveau(x) site(s), {result.get('updated', 0)} mis à jour, audit lancé : {audit_started}")
+    return {
+        "notion_total": result.get("notion_total", 0),
+        "created": [{"client": c["project_name"], "url": c["site_url"]} for c in created],
+        "updated": result.get("updated", 0),
+        "audit_started": audit_started,
+    }
+
 @app.get("/api/results", response_model=PaginatedResults, dependencies=[Depends(require_api_key)])
 async def get_results(
     request: Request,
