@@ -460,8 +460,8 @@ async def launch_scan(
 @app.post("/api/sync-notion", dependencies=[Depends(require_api_key)])
 async def sync_notion(background_tasks: BackgroundTasks):
     """
-    Appelé chaque soir par le cron Dokploy, avant l'audit de nuit : ajoute à PocketBase
-    les sites passés à « Mis en ligne » dans Notion, puis audite tout de suite les nouveaux
+    Appelé chaque soir par le cron Dokploy, avant l'audit de nuit : aligne PocketBase sur Notion
+    (ajoute les sites « Mis en ligne », désactive ceux qui ne le sont plus), puis audite tout de suite les nouveaux
     (en tâche de fond, fusionnés dans results.json sans toucher au reste du parc).
     """
     try:
@@ -477,11 +477,13 @@ async def sync_notion(background_tasks: BackgroundTasks):
         background_tasks.add_task(_run_audit_locked, created, _on_progress, None, False, "parc")
         audit_started = True
 
-    print(f"[notion] {len(created)} nouveau(x) site(s), {result.get('updated', 0)} mis à jour, audit lancé : {audit_started}")
+    print(f"[notion] {len(created)} nouveau(x), {result.get('updated', 0)} mis à jour, {len(result.get('deactivated', []))} désactivé(s), {len(result.get('reactivated', []))} réactivé(s), audit lancé : {audit_started}")
     return {
         "notion_total": result.get("notion_total", 0),
         "created": [{"client": c["project_name"], "url": c["site_url"]} for c in created],
         "updated": result.get("updated", 0),
+        "deactivated": result.get("deactivated", []),
+        "reactivated": result.get("reactivated", []),
         "audit_started": audit_started,
     }
 

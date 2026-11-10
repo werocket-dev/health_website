@@ -5,10 +5,8 @@ dans Notion et les ajoute à la collection `projects` (donc dans les audits).
 Reprend la logique de scripts_entrainement/1_extraction_dataset.py (appel API
 Notion) et 2_init_db.py (nettoyage + upsert), sans passer par un CSV.
 
-Règles :
-- un site déjà connu n'est jamais réactivé (is_active reste tel quel) ;
-- un site retiré de Notion ou repassé à un autre état n'est PAS désactivé :
-  on ne fait qu'ajouter / mettre à jour le nom et la date.
+Notion est la référence : un site n'est actif dans PocketBase que s'il est
+« Mis en ligne » dans Notion (désactivé sinon, jamais supprimé).
 
 Doit tourner dans le sous-processus pb_worker (cf. commentaire en tête de
 pb_worker.py), via la commande « sync_notion ».
@@ -25,6 +23,7 @@ from services import pocketbase_client as pbc
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 NOTION_VERSION = "2022-06-28"
+DEFAULT_MAX_DEACTIVATE = 50
 
 
 def is_configured() -> bool:
@@ -86,9 +85,13 @@ def fetch_notion_sites() -> list[dict]:
 
 def sync() -> dict:
     """
-    Ajoute les nouveaux sites, met à jour nom/date des existants.
-    `created` contient, pour chaque nouveau site, de quoi le passer à run_audit
-    (project_id, project_name, site_url).
+    Aligne PocketBase sur Notion : Notion est la référence, un site n'est actif que s'il y est « Mis en ligne ».
+    - nouveaux sites : créés (renvoyés dans `created` pour être audités aussitôt) ;
+    - sites connus : nom/date mis à jour ;
+    - sites actifs absents des « Mis en ligne » (annulé, fin de contrat, impayé, URL changée...) : désactivés ;
+    - sites désactivés qui repassent « Mis en ligne » : réactivés.
+    Garde-fou : rien n'est écrit si Notion ne renvoie aucun site ou si trop de sites seraient désactivés d'un coup
+    (panne, filtre modifié...) — mieux vaut échouer que vider l'audit.
     """
     if not is_configured():
         raise RuntimeError("NOTION_TOKEN ou DATABASE_ID manquant")
@@ -97,11 +100,20 @@ def sync() -> dict:
     by_url: dict[str, dict] = {}
     for s in sorted(fetch_notion_sites(), key=lambda s: s["date_mise_en_ligne"] or ""):
         by_url[s["url"]] = s
+    if not by_url:
+        raise RuntimeError("Notion n'a renvoyé aucun site « Mis en ligne » — synchro annulée par sécurité")
 
     pb = pbc.get_client()
     existing = {r.url: r for r in pb.collection("projects").get_full_list()}
 
-    created, updated = [], 0
+    to_deactivate = [r for url, r in existing.items() if r.is_active and url not in by_url]
+    max_deactivate = int(os.getenv("NOTION_SYNC_MAX_DEACTIVATE", DEFAULT_MAX_DEACTIVATE))
+    if len(to_deactivate) > max_deactivate:
+        raise RuntimeError(
+            f"{len(to_deactivate)} sites seraient désactivés (limite {max_deactivate}) — synchro annulée par sécurité"
+        )
+
+    created, updated, reactivated = [], 0, []
     for url, s in by_url.items():
         d = date.fromisoformat(s["date_mise_en_ligne"]) if s["date_mise_en_ligne"] else None
         rec = existing.get(url)
@@ -116,5 +128,19 @@ def sync() -> dict:
         if not same:
             pbc.upsert_project_from_notion(s["client_name"], url, d, s["notion_page_id"])
             updated += 1
+        if not rec.is_active:
+            pb.collection("projects").update(rec.id, {"is_active": True})
+            reactivated.append({"client": s["client_name"], "url": url})
 
-    return {"notion_total": len(by_url), "created": created, "updated": updated}
+    deactivated = []
+    for rec in to_deactivate:
+        pb.collection("projects").update(rec.id, {"is_active": False})
+        deactivated.append({"client": rec.client_name, "url": rec.url})
+
+    return {
+        "notion_total": len(by_url),
+        "created": created,
+        "updated": updated,
+        "deactivated": deactivated,
+        "reactivated": reactivated,
+    }

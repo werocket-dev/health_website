@@ -86,7 +86,7 @@ class SyncTests(unittest.TestCase):
         existing = project("a" * 15, "Dupont", "https://dupont.fr", "2026-01-10 00:00:00.000Z")
         result, col = self.run_sync([existing], [notion("Dupont", "https://dupont.fr")])
         self.assertEqual(result["created"], [])
-        self.assertEqual(result["updated"], 0)
+        self.assertEqual((result["updated"], result["deactivated"], result["reactivated"]), (0, [], []))
         self.assertEqual((col.created, col.updated), ([], []))
 
     def test_site_connu_nom_modifie_est_mis_a_jour_sans_audit(self):
@@ -96,16 +96,56 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(result["updated"], 1)
         self.assertEqual(col.records["a" * 15].client_name, "Nouveau nom")
 
-    def test_site_desactive_a_la_main_nest_pas_reactive(self):
-        existing = project("a" * 15, "Ancien", "https://dupont.fr", "2026-01-10 00:00:00.000Z", active=False)
-        self.run_sync([existing], [notion("Nouveau", "https://dupont.fr")])
-        self.assertFalse(col_active(existing))
-
-    def test_site_absent_de_notion_nest_pas_desactive(self):
-        existing = project("a" * 15, "Dupont", "https://dupont.fr")
-        result, col = self.run_sync([existing], [])
+    def test_site_desactive_repassant_mis_en_ligne_est_reactive(self):
+        existing = project("a" * 15, "Dupont", "https://dupont.fr", "2026-01-10 00:00:00.000Z", active=False)
+        result, col = self.run_sync([existing], [notion("Dupont", "https://dupont.fr")])
         self.assertTrue(existing.is_active)
-        self.assertEqual((result["created"], result["updated"], col.updated), ([], 0, []))
+        self.assertEqual(result["reactivated"], [{"client": "Dupont", "url": "https://dupont.fr"}])
+        self.assertEqual(result["created"], [])  # réactivé, pas recréé : pas d'audit immédiat
+
+    def test_site_actif_absent_de_notion_est_desactive_pas_supprime(self):
+        gone = project("a" * 15, "Annule", "https://annule.fr")
+        kept = project("b" * 15, "Dupont", "https://dupont.fr", "2026-01-10 00:00:00.000Z")
+        result, col = self.run_sync([gone, kept], [notion("Dupont", "https://dupont.fr")])
+        self.assertFalse(gone.is_active)
+        self.assertTrue(kept.is_active)
+        self.assertIn("a" * 15, col.records)  # jamais supprimé
+        self.assertEqual(result["deactivated"], [{"client": "Annule", "url": "https://annule.fr"}])
+
+    def test_site_deja_desactive_et_absent_de_notion_reste_tranquille(self):
+        off = project("a" * 15, "Annule", "https://annule.fr", active=False)
+        result, col = self.run_sync([off], [notion("Dupont", "https://dupont.fr")])
+        self.assertFalse(off.is_active)
+        self.assertEqual((result["deactivated"], result["reactivated"]), ([], []))
+
+    def test_ancienne_url_desactivee_quand_lurl_change_dans_notion(self):
+        old = project("a" * 15, "Sens et Creation", "https://old.fr")
+        result, col = self.run_sync([old], [notion("Sens et Creation", "https://new.fr")])
+        self.assertFalse(old.is_active)
+        self.assertEqual([c["site_url"] for c in result["created"]], ["https://new.fr"])
+
+    def test_notion_vide_rien_nest_touche(self):
+        existing = project("a" * 15, "Dupont", "https://dupont.fr")
+        pb = FakePB([existing])
+        with mock.patch.object(notion_sync, "is_configured", return_value=True), \
+             mock.patch.object(notion_sync, "fetch_notion_sites", return_value=[]), \
+             mock.patch.object(pbc, "get_client", return_value=pb):
+            with self.assertRaises(RuntimeError):
+                notion_sync.sync()
+        self.assertTrue(existing.is_active)
+        self.assertEqual(pb.projects.updated, [])
+
+    def test_trop_de_desactivations_refuse_sans_rien_ecrire(self):
+        projects = [project(f"{i:015d}", f"S{i}", f"https://s{i}.fr") for i in range(4)]
+        pb = FakePB(projects)
+        with mock.patch.object(notion_sync, "is_configured", return_value=True), \
+             mock.patch.object(notion_sync, "fetch_notion_sites", return_value=[notion("Nouveau", "https://nouveau.fr")]), \
+             mock.patch.object(pbc, "get_client", return_value=pb), \
+             mock.patch.dict(os.environ, {"NOTION_SYNC_MAX_DEACTIVATE": "3"}):
+            with self.assertRaises(RuntimeError):
+                notion_sync.sync()
+        self.assertTrue(all(p.is_active for p in projects))
+        self.assertEqual((pb.projects.created, pb.projects.updated), ([], []))  # même pas le nouveau site
 
     def test_doublon_url_notion_garde_la_mise_en_ligne_la_plus_recente(self):
         sites = [notion("Recent", "https://dupont.fr", "2026-05-01"), notion("Vieux", "https://dupont.fr", "2025-01-01")]
@@ -122,7 +162,7 @@ class SyncTests(unittest.TestCase):
             first = notion_sync.sync()
             second = notion_sync.sync()
         self.assertEqual(len(first["created"]), 1)
-        self.assertEqual((second["created"], second["updated"]), ([], 0))
+        self.assertEqual((second["created"], second["updated"], second["deactivated"]), ([], 0, []))
 
     def test_sans_token_notion_erreur_claire(self):
         with mock.patch.object(notion_sync, "is_configured", return_value=False):
